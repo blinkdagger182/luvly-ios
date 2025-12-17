@@ -61,9 +61,10 @@ private extension 📝NotesGridView {
                     note: self.getNote(ⓕamily),
                     family: ⓕamily
                 )
-                .frame(height: 300)
+                .frame(maxWidth: 400)
                 .portal(item: ⓕamily, .destination)
                 .padding(.top, 20)
+                .padding(.horizontal, 20)
                 
                 Spacer()
             }
@@ -103,13 +104,25 @@ private extension 📝NotesGridView {
     
 
     func notePreview(_ ⓕamily: 📝NoteFamily) -> some View {
-        ZStack {
+        let note = self.getNote(ⓕamily)
+        let isExpanding = self.expandedNote == ⓕamily
+        
+        return ZStack {
             RoundedRectangle(cornerRadius: 16)
                 .fill(self.backgroundColor(ⓕamily))
             
-            if let ⓓrawing = self.loadDrawing(ⓕamily) {
-                🖊DrawingPreview(drawing: ⓓrawing)
-                    .padding(8)
+            // Show spinner when expanding, otherwise show content
+            if isExpanding {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .tint(.secondary)
+            } else if !note.drawingData.data.isEmpty,
+                      let ⓓrawing = try? PKDrawing(data: note.drawingData.data) {
+                🖊DrawingPreview(
+                    drawing: ⓓrawing,
+                    dataHash: note.drawingData.data.hashValue
+                )
+                .padding(8)
             } else {
                 Image(systemName: "plus")
                     .font(.system(size: 40))
@@ -142,23 +155,6 @@ private extension 📝NotesGridView {
         }
     }
     
-    func loadDrawing(_ ⓕamily: 📝NoteFamily) -> PKDrawing? {
-        let ⓝote: 📝NoteModel
-        switch ⓕamily {
-            case .primary:
-                ⓝote = self.app.primaryNote
-            case .secondary:
-                ⓝote = self.app.secondaryNote
-            case .tertiary:
-                ⓝote = self.app.tertiaryNote
-        }
-        
-        guard !ⓝote.drawingData.data.isEmpty,
-              let ⓓrawing = try? PKDrawing(data: ⓝote.drawingData.data) else {
-            return nil
-        }
-        return ⓓrawing
-    }
 }
 
 // MARK: - Full Screen Canvas
@@ -167,33 +163,34 @@ struct 🖊FullScreenCanvas: View {
     @ObservedObject var note: 📝NoteModel
     let family: 📝NoteFamily
     
-    @State private var canvasView = PKCanvasView()
-    @State private var selectedTool: 🖊DrawingTool = .pen
-    @State private var autoSaveTimer: Timer?
+    @State private var isLoading = true
     
     var body: some View {
         ZStack {
+            // Background
             RoundedRectangle(cornerRadius: 16)
                 .fill(self.backgroundColor)
             
-            🖊CanvasViewRepresentable(
-                canvasView: self.$canvasView,
-                selectedTool: self.$selectedTool,
-                isExpanded: true
+            // Loading spinner
+            if self.isLoading {
+                ProgressView()
+                    .scaleEffect(1.5)
+                    .tint(.secondary)
+            }
+            
+            // Canvas - always present but hidden until ready
+            🖊CanvasRepresentable(
+                note: self.note,
+                backgroundColor: UIColor(self.backgroundColor),
+                onReady: {
+                    self.isLoading = false
+                }
             )
-            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .opacity(self.isLoading ? 0 : 1)
         }
         .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(radius: 2)
-        .onAppear {
-            self.loadDrawing()
-            self.setupCanvas()
-            self.startAutoSave()
-        }
-        .onDisappear {
-            self.stopAutoSave()
-            self.saveDrawing()
-        }
     }
     
     private var backgroundColor: Color {
@@ -203,53 +200,102 @@ struct 🖊FullScreenCanvas: View {
             case .tertiary: Color.orange
         }
     }
+}
+
+// MARK: - Canvas Representable
+
+struct 🖊CanvasRepresentable: UIViewRepresentable {
+    @ObservedObject var note: 📝NoteModel
+    let backgroundColor: UIColor
+    var onReady: (() -> Void)?
     
-    private func setupCanvas() {
-        self.canvasView.drawingPolicy = .anyInput
-        self.canvasView.backgroundColor = UIColor(self.backgroundColor)
-        self.canvasView.isOpaque = false
-        self.canvasView.contentInsetAdjustmentBehavior = .never
-        self.canvasView.minimumZoomScale = 1.0
-        self.canvasView.maximumZoomScale = 1.0
-        self.canvasView.zoomScale = 1.0
-        self.updateTool()
-    }
-    
-    private func updateTool() {
-        switch self.selectedTool {
-            case .pen:
-                self.canvasView.tool = PKInkingTool(.pen, color: .black, width: 3)
-            case .marker:
-                self.canvasView.tool = PKInkingTool(.marker, color: .black, width: 15)
-            case .eraser:
-                self.canvasView.tool = PKEraserTool(.vector)
+    func makeUIView(context: Context) -> PKCanvasView {
+        let canvas = PKCanvasView()
+        canvas.drawingPolicy = .anyInput
+        canvas.backgroundColor = self.backgroundColor
+        canvas.isOpaque = true
+        canvas.tool = PKInkingTool(.pen, color: .black, width: 3)
+        canvas.delegate = context.coordinator
+        
+        // Lock zoom BEFORE loading drawing
+        canvas.minimumZoomScale = 1.0
+        canvas.maximumZoomScale = 1.0
+        canvas.zoomScale = 1.0
+        canvas.bouncesZoom = false
+        canvas.contentOffset = .zero
+        
+        // Load existing drawing
+        if !self.note.drawingData.data.isEmpty,
+           let drawing = try? PKDrawing(data: self.note.drawingData.data) {
+            canvas.drawing = drawing
+            // Force reset immediately after loading
+            canvas.zoomScale = 1.0
+            canvas.contentOffset = .zero
         }
-    }
-    
-    private func loadDrawing() {
-        guard let ⓓrawingData = try? self.note.drawingData.data,
-              !ⓓrawingData.isEmpty,
-              let ⓓrawing = try? PKDrawing(data: ⓓrawingData) else {
-            return
+        
+        // Store note reference and onReady callback in coordinator
+        context.coordinator.note = self.note
+        context.coordinator.onReady = self.onReady
+        context.coordinator.startAutoSave(canvas: canvas)
+        
+        // Signal ready on next run loop (can't update SwiftUI state during makeUIView)
+        DispatchQueue.main.async {
+            context.coordinator.onReady?()
+            context.coordinator.onReady = nil
         }
-        self.canvasView.drawing = ⓓrawing
+        
+        return canvas
     }
     
-    private func saveDrawing() {
-        let ⓓata = self.canvasView.drawing.dataRepresentation()
-        let ⓓrawingData = 📝DrawingData(data: ⓓata)
-        self.note.save(.drawingData, ⓓrawingData)
+    func updateUIView(_ uiView: PKCanvasView, context: Context) {
+        uiView.backgroundColor = self.backgroundColor
+        context.coordinator.note = self.note
     }
     
-    private func startAutoSave() {
-        self.autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            self.saveDrawing()
+    static func dismantleUIView(_ uiView: PKCanvasView, coordinator: Coordinator) {
+        coordinator.stopAutoSave()
+        coordinator.saveDrawing(from: uiView)
+        💾ICloud.synchronize()
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator: NSObject, PKCanvasViewDelegate {
+        var note: 📝NoteModel?
+        var onReady: (() -> Void)?
+        private var autoSaveTimer: Timer?
+        private weak var canvasRef: PKCanvasView?
+        
+        func startAutoSave(canvas: PKCanvasView) {
+            self.canvasRef = canvas
+            self.autoSaveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                guard let self, let canvas = self.canvasRef else { return }
+                self.saveDrawing(from: canvas)
+            }
         }
-    }
-    
-    private func stopAutoSave() {
-        self.autoSaveTimer?.invalidate()
-        self.autoSaveTimer = nil
+        
+        func stopAutoSave() {
+            self.autoSaveTimer?.invalidate()
+            self.autoSaveTimer = nil
+        }
+        
+        func saveDrawing(from canvas: PKCanvasView) {
+            guard let note = self.note else { return }
+            let data = canvas.drawing.dataRepresentation()
+            let drawingData = 📝DrawingData(data: data)
+            note.drawingData = drawingData
+            note.save(.drawingData, drawingData)
+        }
+        
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            self.saveDrawing(from: canvasView)
+        }
+        
+        deinit {
+            self.stopAutoSave()
+        }
     }
 }
 
@@ -257,26 +303,40 @@ struct 🖊FullScreenCanvas: View {
 
 struct 🖊DrawingPreview: View {
     let drawing: PKDrawing
+    let drawingDataHash: Int // Used to detect changes
+    
     @State private var cachedImage: UIImage?
+    @State private var lastHash: Int = 0
+    
+    init(drawing: PKDrawing, dataHash: Int) {
+        self.drawing = drawing
+        self.drawingDataHash = dataHash
+    }
     
     var body: some View {
         GeometryReader { ⓖeometry in
             Group {
-                if let ⓘmage = self.cachedImage {
+                if let ⓘmage = self.cachedImage, self.lastHash == self.drawingDataHash {
                     Image(uiImage: ⓘmage)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                 } else {
                     Color.clear
-                        .onAppear {
-                            self.generateImage(size: ⓖeometry.size)
-                        }
                 }
+            }
+            .onAppear {
+                self.generateImage(size: ⓖeometry.size)
+            }
+            .onChange(of: self.drawingDataHash) {
+                self.generateImage(size: ⓖeometry.size)
             }
         }
     }
     
     private func generateImage(size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        
+        let currentHash = self.drawingDataHash
         DispatchQueue.global(qos: .userInitiated).async {
             let ⓘmage = self.drawing.image(
                 from: self.drawing.bounds,
@@ -285,6 +345,7 @@ struct 🖊DrawingPreview: View {
             
             DispatchQueue.main.async {
                 self.cachedImage = ⓘmage
+                self.lastHash = currentHash
             }
         }
     }
@@ -292,10 +353,12 @@ struct 🖊DrawingPreview: View {
 
 private extension UIImage {
     func resized(to ⓢize: CGSize) -> UIImage? {
-        UIGraphicsBeginImageContextWithOptions(ⓢize, false, self.scale)
-        defer { UIGraphicsEndImageContext() }
-        self.draw(in: CGRect(origin: .zero, size: ⓢize))
-        return UIGraphicsGetCurrentContext()?.makeImage().flatMap { UIImage(cgImage: $0) }
+        guard ⓢize.width > 0, ⓢize.height > 0 else { return nil }
+        
+        let ⓡenderer = UIGraphicsImageRenderer(size: ⓢize)
+        return ⓡenderer.image { context in
+            self.draw(in: CGRect(origin: .zero, size: ⓢize))
+        }
     }
 }
 

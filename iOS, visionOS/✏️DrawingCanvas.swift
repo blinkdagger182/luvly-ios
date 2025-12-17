@@ -164,11 +164,16 @@ struct 🖊CanvasViewRepresentable: UIViewRepresentable {
     
     func makeUIView(context: Context) -> PKCanvasView {
         self.canvasView.delegate = context.coordinator
+        self.canvasView.drawingPolicy = .anyInput
+        self.canvasView.bouncesZoom = false
+        self.canvasView.contentInsetAdjustmentBehavior = .never
+        
         return self.canvasView
     }
     
     func updateUIView(_ uiView: PKCanvasView, context: Context) {
         uiView.isUserInteractionEnabled = self.isExpanded
+        uiView.isScrollEnabled = self.isExpanded
         self.updateTool()
     }
     

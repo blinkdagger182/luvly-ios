@@ -4,6 +4,30 @@
 
 ---
 
+## 2025-12-17 - Fixed Drawing Save + Zoom Issues with Canvas Manager
+
+- **Changed**: Rewrote canvas architecture to fix both save persistence and zoom coordinate issues
+- **Files**:
+  - `iOS, visionOS/📝NotesGridView.swift` (modified) - Replaced @State canvasView with @StateObject 🖊CanvasManager
+- **Reason**: Two interconnected issues: (1) @State PKCanvasView was recreated on view reappear, losing drawing data; (2) PKCanvasView auto-adjusts zoom when loading drawings, causing coordinate mismatch
+- **Root Causes Fixed**:
+  - Save Issue: @State creates new PKCanvasView instance each time view appears during Portal transitions
+  - Zoom Issue: PKCanvasView (UIScrollView subclass) auto-adjusts zoomScale/contentOffset when drawing is loaded
+- **Solution**:
+  - Created `🖊CanvasManager` class with @StateObject for stable PKCanvasView reference across view lifecycle
+  - Disabled scroll/zoom entirely: `isScrollEnabled = false`, `min/maxZoomScale = 1.0`
+  - Set `contentSize` to match view size exactly
+  - Added `normalizeDrawing()` to transform out-of-bounds drawings back into canvas coordinate space
+  - Force reset zoom/offset after loading via `DispatchQueue.main.async`
+  - Added `💾ICloud.synchronize()` on dismiss to ensure immediate persistence
+  - Delegate enforces zoom=1.0 and offset=.zero after any drawing change
+- **Impact**:
+  - Drawings persist correctly across app launches
+  - Canvas maintains 1:1 zoom with view coordinate space
+  - Preview cards show saved drawings
+  - Auto-save every 2 seconds + save on dismiss
+  - iCloud sync works reliably
+
 ## 2025-12-16 - Portal Transitions with Full-Screen Canvas
 
 - **Changed**: Implemented Portal library with card morphing directly into full-screen drawing canvas
