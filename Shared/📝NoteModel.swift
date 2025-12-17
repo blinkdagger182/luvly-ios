@@ -5,6 +5,7 @@ class 📝NoteModel: ObservableObject {
     var family: 📝NoteFamily
     @Published var title: String
     @Published var text: String = ""
+    @Published var drawingData: 📝DrawingData = .init()
     
     @Published var fontWeight: 🎚️FontWeight = .regular
     @Published var fontDesign: 🎚️FontDesign = .default
@@ -69,6 +70,7 @@ private extension 📝NoteModel {
         do {
             switch ⓟroperty {
                 case .text: self.text = try self.load(ⓟroperty)
+                case .drawingData: self.drawingData = try self.load(ⓟroperty)
                 case .title: self.title = try self.load(ⓟroperty)
                 case .fontWeight: self.fontWeight = try self.load(ⓟroperty)
                 case .fontDesign: self.fontDesign = try self.load(ⓟroperty)

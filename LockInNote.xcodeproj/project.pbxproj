@@ -397,6 +397,17 @@
 		F5F9D66D2A9AC543008CD67F /* 💾ICloudVer_1_1.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5EAB5E22A72739100B2CD9E /* 💾ICloudVer_1_1.swift */; };
 		F5F9D66F2A9AC5BE008CD67F /* ♻️BaseModelVer_1_1.swift in Sources */ = {isa = PBXBuildFile; fileRef = F566A85B29CED1A300ACCC63 /* ♻️BaseModelVer_1_1.swift */; };
 		F5F9D6712A9AC5C6008CD67F /* 💾UserDefaultsVer_1_1.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57E85C729D2B98400927561 /* 💾UserDefaultsVer_1_1.swift */; };
+		FCAD6B382EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B392EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B3A2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B3B2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B3C2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B3D2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */; };
+		FCAD6B442EF18B4200ADBD15 /* ✏️DrawingToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B432EF18B4200ADBD15 /* ✏️DrawingToolbar.swift */; };
+		FCAD6B452EF18B4200ADBD15 /* ✏️DrawingCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B422EF18B4200ADBD15 /* ✏️DrawingCanvas.swift */; };
+		FCAD6B472EF18DB700ADBD15 /* 📝NotesGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */; };
+		FCAD6B4A2EF18F8200ADBD15 /* Portal in Frameworks */ = {isa = PBXBuildFile; productRef = FCAD6B492EF18F8200ADBD15 /* Portal */; };
+		FCAD6B4C2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -783,6 +794,11 @@
 		F5F9D65A2A99C36B008CD67F /* 🔲WindowEdgeFeedback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🔲WindowEdgeFeedback.swift"; sourceTree = "<group>"; };
 		F5F9D6602A99ECBC008CD67F /* 📋AddNoteToEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "📋AddNoteToEnvironment.swift"; sourceTree = "<group>"; };
 		F5F9D6642A9A27F8008CD67F /* 🗄️FromVer_1_1.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🗄️FromVer_1_1.swift"; sourceTree = "<group>"; };
+		FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "📝DrawingData.swift"; sourceTree = "<group>"; };
+		FCAD6B422EF18B4200ADBD15 /* ✏️DrawingCanvas.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "✏️DrawingCanvas.swift"; sourceTree = "<group>"; };
+		FCAD6B432EF18B4200ADBD15 /* ✏️DrawingToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "✏️DrawingToolbar.swift"; sourceTree = "<group>"; };
+		FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "📝NotesGridView.swift"; sourceTree = "<group>"; };
+		FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🖊ExpandedDrawingView.swift"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -807,6 +823,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FCAD6B4A2EF18F8200ADBD15 /* Portal in Frameworks */,
 				F556950228CCA8A5004558FC /* StoreKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -890,6 +907,10 @@
 		F51E39942A8CAA4700F32F4F /* iOS, visionOS */ = {
 			isa = PBXGroup;
 			children = (
+				FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */,
+				FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */,
+				FCAD6B422EF18B4200ADBD15 /* ✏️DrawingCanvas.swift */,
+				FCAD6B432EF18B4200ADBD15 /* ✏️DrawingToolbar.swift */,
 				F51E399D2A8CAA4700F32F4F /* App.swift */,
 				F51E399E2A8CAA4700F32F4F /* ContentView.swift */,
 				F51E399C2A8CAA4700F32F4F /* 📱AppModel.swift */,
@@ -961,6 +982,7 @@
 		F51E39AE2A8CAA4700F32F4F /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */,
 				F51E39B12A8CAA4700F32F4F /* 📝NoteFamily.swift */,
 				F51E39B72A8CAA4700F32F4F /* 📝NoteProperty.swift */,
 				F51E39B82A8CAA4700F32F4F /* 📝NoteModel.swift */,
@@ -1407,6 +1429,9 @@
 				ja,
 			);
 			mainGroup = F54BE1BD28CB480900532025;
+			packageReferences = (
+				FCAD6B482EF18F8200ADBD15 /* XCRemoteSwiftPackageReference "Portal" */,
+			);
 			productRefGroup = F54BE1C728CB480900532025 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -1560,6 +1585,7 @@
 				F5AD41082A9F226400202C2D /* 📣ADSheet.swift in Sources */,
 				F51E3A1B2A8CAFE200F32F4F /* 🔗Menu.swift in Sources */,
 				F51E3A202A8CB05F00F32F4F /* 📝NoteFamily.swift in Sources */,
+				FCAD6B3D2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				F51E3A232A8CB06500F32F4F /* 🔗Button.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1582,6 +1608,7 @@
 				F51E3A3F2A8CB28900F32F4F /* 📝NoteProperty.swift in Sources */,
 				F538583E2A9C78FD00A0D72D /* 🪧SnapshotTitle.swift in Sources */,
 				F53858252A9C781300A0D72D /* 🪧AccessoryFamilyView.swift in Sources */,
+				FCAD6B382EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				F51E3A3E2A8CB28900F32F4F /* 📝NoteFamily.swift in Sources */,
 				F51E3A442A8CB29100F32F4F /* Widget.swift in Sources */,
 				F50310DA2A9C18E30077EE5E /* 🗄️FromVer_1_1.swift in Sources */,
@@ -1614,6 +1641,7 @@
 				F53858482A9C7BEB00A0D72D /* 🎚️SaveValues.swift in Sources */,
 				F53858402A9C797100A0D72D /* 🪧ContainerBackground.swift in Sources */,
 				1DF9F7612E652C1700DB9E09 /* 🎚EmptyIconMenuLink.swift in Sources */,
+				FCAD6B3A2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				1DC0D2142E6435AF00240332 /* temporary.swift in Sources */,
 				F5F9D66F2A9AC5BE008CD67F /* ♻️BaseModelVer_1_1.swift in Sources */,
 				F51E3A512A8CC8B800F32F4F /* 💁HowToGuide.swift in Sources */,
@@ -1629,6 +1657,7 @@
 				F51E39E92A8CAA9800F32F4F /* 🛠️OptionTab.swift in Sources */,
 				F51E3A4D2A8CC5D100F32F4F /* ℹ️AboutApp.swift in Sources */,
 				F51E39ED2A8CAA9800F32F4F /* App.swift in Sources */,
+				FCAD6B472EF18DB700ADBD15 /* 📝NotesGridView.swift in Sources */,
 				F51E3A482A8CC58800F32F4F /* 📣ADModel.swift in Sources */,
 				1DF9F7632E652C3900DB9E09 /* 🎚️SharedOptionPreview.swift in Sources */,
 				F51E39CE2A8CAA7900F32F4F /* 🔗Model.swift in Sources */,
@@ -1643,11 +1672,14 @@
 				F51E39E82A8CAA9800F32F4F /* 🔖Tab.swift in Sources */,
 				F53CB0BC2A9D5C1B0039FC31 /* 🪧SampleTextInApp.swift in Sources */,
 				F51E3A4F2A8CC63000F32F4F /* ℹ️InfoTab.swift in Sources */,
+				FCAD6B442EF18B4200ADBD15 /* ✏️DrawingToolbar.swift in Sources */,
+				FCAD6B452EF18B4200ADBD15 /* ✏️DrawingCanvas.swift in Sources */,
 				F5F9D6712A9AC5C6008CD67F /* 💾UserDefaultsVer_1_1.swift in Sources */,
 				F5F9D6652A9A27F8008CD67F /* 🗄️FromVer_1_1.swift in Sources */,
 				1DF9F75B2E652AF300DB9E09 /* 🎚️SystemWidgetMenuLink.swift in Sources */,
 				1DF9F75D2E652B0700DB9E09 /* 🎚️AccessoryWidgetMenuLink.swift in Sources */,
 				F51E3A502A8CC8B800F32F4F /* 💬RequestUserReview.swift in Sources */,
+				FCAD6B4C2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift in Sources */,
 				1DF9F7652E652FAE00DB9E09 /* 🎚️DoubleSizeOnLargeWidgetMenuLink.swift in Sources */,
 				F538581E2A9C76F100A0D72D /* 🪧AccessoryFamilyView.swift in Sources */,
 			);
@@ -1659,6 +1691,7 @@
 			files = (
 				F538582B2A9C783E00A0D72D /* 🪧EmptyIconView.swift in Sources */,
 				F5F9D6682A9A295F008CD67F /* 🗄️FromVer_1_1.swift in Sources */,
+				FCAD6B3C2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				F51E39D82A8CAA9000F32F4F /* 📝NoteModel.swift in Sources */,
 				F51E39DA2A8CAA9000F32F4F /* 📝NoteProperty.swift in Sources */,
 				F51E39D92A8CAA9000F32F4F /* 🪧EntryView.swift in Sources */,
@@ -1706,6 +1739,7 @@
 				F5EF8DA32A9C403600650FAF /* ♻️BaseModelVer_1_1.swift in Sources */,
 				F53858292A9C783E00A0D72D /* 🪧EmptyIconView.swift in Sources */,
 				F51E39DC2A8CAA9100F32F4F /* 📝NoteModel.swift in Sources */,
+				FCAD6B3B2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				F51E39F12A8CAAA000F32F4F /* 💬Sheet.swift in Sources */,
 				F5F9D6622A99EF5B008CD67F /* 📋AddNoteToEnvironment.swift in Sources */,
 				F51E3A572A8CD7D800F32F4F /* 🗒️StaticInfo.swift in Sources */,
@@ -1747,6 +1781,7 @@
 				F51E39D32A8CAA8400F32F4F /* 🎚️Model.swift in Sources */,
 				F51E39E32A8CAA9100F32F4F /* 📝NoteFamily.swift in Sources */,
 				F5606E6D2A9D87800046EC5D /* 🪧Situation.swift in Sources */,
+				FCAD6B392EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				F50310D92A9C18E20077EE5E /* 🗄️FromVer_1_1.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2049,7 +2084,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
+				INFOPLIST_KEY_CFBundleDisplayName = luvly;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -2086,7 +2121,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
+				INFOPLIST_KEY_CFBundleDisplayName = luvly;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -2367,6 +2402,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FCAD6B482EF18F8200ADBD15 /* XCRemoteSwiftPackageReference "Portal" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Aeastr/Portal";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FCAD6B492EF18F8200ADBD15 /* Portal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FCAD6B482EF18F8200ADBD15 /* XCRemoteSwiftPackageReference "Portal" */;
+			productName = Portal;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = F54BE1BE28CB480900532025 /* Project object */;
 }

@@ -1,0 +1,51 @@
+{
+  "originHash" : "a40b7d8e7d68771c4b2ef8a8dc1a3cc5646286472c81d0f067229664a4cec693",
+  "pins" : [
+    {
+      "identity" : "logoutloud",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/LogOutLoud.git",
+      "state" : {
+        "revision" : "8b1fb61045d78bd674e4061805e5e6cc69d06950",
+        "version" : "2.1.2"
+      }
+    },
+    {
+      "identity" : "obfuscate",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/Obfuscate.git",
+      "state" : {
+        "revision" : "03bc039fefebf4150cfa594cc68dc83dede068ff",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "portal",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Aeastr/Portal",
+      "state" : {
+        "revision" : "d097cf13b4f6a25e258183931fa147be5474c66e",
+        "version" : "4.2.6"
+      }
+    },
+    {
+      "identity" : "swift-log",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-log.git",
+      "state" : {
+        "revision" : "bc386b95f2a16ccd0150a8235e7c69eab2b866ca",
+        "version" : "1.8.0"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax",
+      "state" : {
+        "revision" : "0687f71944021d616d34d922343dcef086855920",
+        "version" : "600.0.1"
+      }
+    }
+  ],
+  "version" : 3
+}

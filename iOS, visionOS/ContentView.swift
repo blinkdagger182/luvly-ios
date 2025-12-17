@@ -4,10 +4,10 @@ struct ContentView: View {
     @EnvironmentObject var app: 📱AppModel
     var body: some View {
         TabView(selection: self.$app.tab) {
-            ForEach(📝NoteFamily.allCases) {
-                📝NoteTab()
-                    .modifier(📋AddNoteToEnvironment($0))
-            }
+            📝NotesGridView()
+                .tag(🔖Tab.notesList)
+                .tabItem { Label("Notes", systemImage: "square.grid.2x2") }
+            
             🛠️OptionTab()
             ℹ️InfoTab()
         }

@@ -8,12 +8,12 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "LockInNote"
+            "value" : "luvly"
           }
         },
         "ja" : {
           "stringUnit" : {
-            "state" : "translated",
+            "state" : "needs_review",
             "value" : "ロックノート"
           }
         }

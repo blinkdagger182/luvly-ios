@@ -17,7 +17,7 @@ struct 🎚️SaveValues: ViewModifier {
         var property: 📝NoteProperty
         func body(content: Content) -> some View {
             switch self.property {
-                case .text, .title: content
+                case .text, .title, .drawingData: content
                 case .fontWeight: content.onChange(of: self.note.fontWeight) { self.save($1) }
                 case .fontDesign: content.onChange(of:self.note.fontDesign) { self.save($1) }
                 case .italic: content.onChange(of:self.note.italic) { self.save($1) }

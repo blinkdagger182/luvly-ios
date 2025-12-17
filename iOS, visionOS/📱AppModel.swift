@@ -1,7 +1,7 @@
 import SwiftUI
 
 class 📱AppModel: ObservableObject {
-    @Published var tab: 🔖Tab = .note(.primary)
+    @Published var tab: 🔖Tab = .notesList
     @Published var sheet: 💬Sheet? = nil
     @Published private(set) var preferTextFieldFocus: 📝NoteFamily? = nil
     let primaryNote: 📝NoteModel = .init(.primary)
