@@ -7,6 +7,11 @@ struct 🖊DrawingCanvas: View {
     @State private var canvasView = PKCanvasView()
     @State private var selectedTool: 🖊DrawingTool = .pen
     @State private var autoSaveTimer: Timer?
+    @State private var placedStickers: [PlacedSticker] = []
+    
+    func addStickerFromExternal(_ sticker: 🎨Sticker) {
+        addStickerToCanvas(sticker)
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -14,22 +19,48 @@ struct 🖊DrawingCanvas: View {
                 self.topToolbar()
             }
             
-            self.canvas()
-                .frame(maxWidth: .infinity, maxHeight: self.isExpanded ? .infinity : nil)
-                .frame(height: self.isExpanded ? nil : 300)
-                .aspectRatio(self.isExpanded ? nil : 1, contentMode: .fit)
-                .background(Color(uiColor: .systemBackground))
-                .clipShape(RoundedRectangle(cornerRadius: 24))
-                .shadow(radius: 2)
-                .padding(self.isExpanded ? 0 : 20)
-                .onTapGesture {
-                    if !self.isExpanded {
-                        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                            self.isExpanded = true
-                        }
-                        💥Feedback.light()
+            ZStack {
+                self.canvas()
+                
+                ForEach(placedStickers) { placed in
+                    if let uiImage = UIImage(data: placed.sticker.imageData) {
+                        Image(uiImage: uiImage)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 100 * placed.scale, height: 100 * placed.scale)
+                            .position(placed.position)
+                            .gesture(
+                                DragGesture()
+                                    .onChanged { value in
+                                        updateStickerPosition(id: placed.id, position: value.location)
+                                    }
+                            )
+                            .gesture(
+                                MagnificationGesture()
+                                    .onChanged { value in
+                                        updateStickerScale(id: placed.id, scale: value)
+                                    }
+                            )
                     }
                 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: self.isExpanded ? .infinity : nil)
+            .frame(height: self.isExpanded ? nil : 300)
+            .aspectRatio(self.isExpanded ? nil : 1, contentMode: .fit)
+            .background(Color(uiColor: .systemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 24))
+            .shadow(radius: 2)
+            .padding(self.isExpanded ? 0 : 20)
+            .onTapGesture {
+                if !self.isExpanded {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        self.isExpanded = true
+                    }
+                    💥Feedback.light()
+                }
+            }
+            
+
             
             if self.isExpanded {
                 🖊DrawingToolbar(
@@ -40,6 +71,7 @@ struct 🖊DrawingCanvas: View {
                             self.isExpanded = false
                         }
                         self.saveDrawing()
+                        self.saveStickers()
                         💥Feedback.success()
                     }
                 )
@@ -47,16 +79,19 @@ struct 🖊DrawingCanvas: View {
         }
         .onAppear {
             self.loadDrawing()
+            self.loadStickers()
             self.setupCanvas()
             self.startAutoSave()
         }
         .onDisappear {
             self.stopAutoSave()
             self.saveDrawing()
+            self.saveStickers()
         }
         .onChange(of: self.isExpanded) { ⓔxpanded in
             if !ⓔxpanded {
                 self.saveDrawing()
+                self.saveStickers()
             }
         }
     }
@@ -153,6 +188,51 @@ private extension 🖊DrawingCanvas {
         self.autoSaveTimer?.invalidate()
         self.autoSaveTimer = nil
     }
+    
+    func loadStickers() {
+        placedStickers = note.stickerData.stickers.map { sticker in
+            PlacedSticker(
+                id: sticker.id,
+                sticker: sticker,
+                position: sticker.position == .zero ? CGPoint(x: 200, y: 200) : sticker.position,
+                scale: sticker.scale
+            )
+        }
+    }
+    
+    func saveStickers() {
+        var updatedStickers = note.stickerData.stickers
+        for placed in placedStickers {
+            if let index = updatedStickers.firstIndex(where: { $0.id == placed.id }) {
+                updatedStickers[index].position = placed.position
+                updatedStickers[index].scale = placed.scale
+            }
+        }
+        let stickerData = 🎨StickerData(stickers: updatedStickers)
+        note.save(.stickerData, stickerData)
+    }
+    
+    func addStickerToCanvas(_ sticker: 🎨Sticker) {
+        let placed = PlacedSticker(
+            id: sticker.id,
+            sticker: sticker,
+            position: CGPoint(x: 200, y: 200),
+            scale: 1.0
+        )
+        placedStickers.append(placed)
+    }
+    
+    func updateStickerPosition(id: UUID, position: CGPoint) {
+        if let index = placedStickers.firstIndex(where: { $0.id == id }) {
+            placedStickers[index].position = position
+        }
+    }
+    
+    func updateStickerScale(id: UUID, scale: CGFloat) {
+        if let index = placedStickers.firstIndex(where: { $0.id == id }) {
+            placedStickers[index].scale = scale
+        }
+    }
 }
 
 // MARK: - Canvas View Representable
@@ -211,4 +291,13 @@ enum 🖊DrawingTool {
     case pen
     case marker
     case eraser
+}
+
+// MARK: - Placed Sticker
+
+struct PlacedSticker: Identifiable {
+    let id: UUID
+    let sticker: 🎨Sticker
+    var position: CGPoint
+    var scale: CGFloat
 }

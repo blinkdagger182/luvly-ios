@@ -1,6 +1,7 @@
 enum 📝NoteProperty: CaseIterable {
     case text
     case drawingData
+    case stickerData
     
     case title
     

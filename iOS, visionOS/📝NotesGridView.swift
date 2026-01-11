@@ -66,6 +66,15 @@ private extension 📝NotesGridView {
                 .padding(.top, 20)
                 .padding(.horizontal, 20)
                 
+                🎨StickerCarousel { sticker in
+                    // Sticker tapped - it's already in the note's stickerData
+                    💥Feedback.light()
+                }
+                .environmentObject(self.getNote(ⓕamily))
+                .frame(maxWidth: 400)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                
                 Spacer()
             }
             .background(Color(uiColor: .systemBackground))
@@ -164,6 +173,7 @@ struct 🖊FullScreenCanvas: View {
     let family: 📝NoteFamily
     
     @State private var isLoading = true
+    @State private var placedStickers: [PlacedSticker] = []
     
     var body: some View {
         ZStack {
@@ -187,10 +197,66 @@ struct 🖊FullScreenCanvas: View {
                 }
             )
             .opacity(self.isLoading ? 0 : 1)
+            
+            // Stickers overlay
+            ForEach(placedStickers) { placed in
+                if let uiImage = UIImage(data: placed.sticker.imageData) {
+                    Image(uiImage: uiImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 100 * placed.scale, height: 100 * placed.scale)
+                        .position(placed.position)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    updateStickerPosition(id: placed.id, position: value.location)
+                                }
+                        )
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    updateStickerScale(id: placed.id, scale: value)
+                                }
+                        )
+                }
+            }
         }
         .aspectRatio(1, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(radius: 2)
+        .onAppear {
+            loadStickers()
+        }
+        .onChange(of: note.stickerData.stickers.count) { _ in
+            refreshStickers()
+        }
+    }
+    
+    func loadStickers() {
+        placedStickers = note.stickerData.stickers.map { sticker in
+            PlacedSticker(
+                id: sticker.id,
+                sticker: sticker,
+                position: sticker.position == .zero ? CGPoint(x: 200, y: 200) : sticker.position,
+                scale: sticker.scale
+            )
+        }
+    }
+    
+    func refreshStickers() {
+        loadStickers()
+    }
+    
+    func updateStickerPosition(id: UUID, position: CGPoint) {
+        if let index = placedStickers.firstIndex(where: { $0.id == id }) {
+            placedStickers[index].position = position
+        }
+    }
+    
+    func updateStickerScale(id: UUID, scale: CGFloat) {
+        if let index = placedStickers.firstIndex(where: { $0.id == id }) {
+            placedStickers[index].scale = scale
+        }
     }
     
     private var backgroundColor: Color {

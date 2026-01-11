@@ -408,6 +408,14 @@
 		FCAD6B472EF18DB700ADBD15 /* 📝NotesGridView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */; };
 		FCAD6B4A2EF18F8200ADBD15 /* Portal in Frameworks */ = {isa = PBXBuildFile; productRef = FCAD6B492EF18F8200ADBD15 /* Portal */; };
 		FCAD6B4C2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */; };
+		FCAD6B4E2EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B4F2EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B502EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B512EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B522EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B532EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */; };
+		FCAD6B552EF435ED00ADBD15 /* 🎨StickerCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B542EF435ED00ADBD15 /* 🎨StickerCarousel.swift */; };
+		FCAD6B572EF4362C00ADBD15 /* ImageVisionHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCAD6B562EF4362C00ADBD15 /* ImageVisionHelper.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -799,6 +807,9 @@
 		FCAD6B432EF18B4200ADBD15 /* ✏️DrawingToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "✏️DrawingToolbar.swift"; sourceTree = "<group>"; };
 		FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "📝NotesGridView.swift"; sourceTree = "<group>"; };
 		FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🖊ExpandedDrawingView.swift"; sourceTree = "<group>"; };
+		FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🎨StickerModel.swift"; sourceTree = "<group>"; };
+		FCAD6B542EF435ED00ADBD15 /* 🎨StickerCarousel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🎨StickerCarousel.swift"; sourceTree = "<group>"; };
+		FCAD6B562EF4362C00ADBD15 /* ImageVisionHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageVisionHelper.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -907,6 +918,8 @@
 		F51E39942A8CAA4700F32F4F /* iOS, visionOS */ = {
 			isa = PBXGroup;
 			children = (
+				FCAD6B562EF4362C00ADBD15 /* ImageVisionHelper.swift */,
+				FCAD6B542EF435ED00ADBD15 /* 🎨StickerCarousel.swift */,
 				FCAD6B4B2EF18FC000ADBD15 /* 🖊ExpandedDrawingView.swift */,
 				FCAD6B462EF18DB700ADBD15 /* 📝NotesGridView.swift */,
 				FCAD6B422EF18B4200ADBD15 /* ✏️DrawingCanvas.swift */,
@@ -982,6 +995,7 @@
 		F51E39AE2A8CAA4700F32F4F /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+				FCAD6B4D2EF4334C00ADBD15 /* 🎨StickerModel.swift */,
 				FCAD6B372EF18A8D00ADBD15 /* 📝DrawingData.swift */,
 				F51E39B12A8CAA4700F32F4F /* 📝NoteFamily.swift */,
 				F51E39B72A8CAA4700F32F4F /* 📝NoteProperty.swift */,
@@ -1573,6 +1587,7 @@
 				F51E3A182A8CAFDD00F32F4F /* 🎚️CustomizeMenu.swift in Sources */,
 				F538584F2A9C7C0800A0D72D /* 🎚️PreviewInApp.swift in Sources */,
 				F5F9D6632A99F034008CD67F /* 📋AddNoteToEnvironment.swift in Sources */,
+				FCAD6B512EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F51E3AAC2A8CEC2800F32F4F /* 📣ADContent.swift in Sources */,
 				F51E3A4A2A8CC58A00F32F4F /* 🗒️StaticInfo.swift in Sources */,
 				F51E3A1C2A8CB05F00F32F4F /* 📝NoteModel.swift in Sources */,
@@ -1602,6 +1617,7 @@
 				F51E3A452A8CB29100F32F4F /* WidgetBundle.swift in Sources */,
 				F5606E6E2A9D87800046EC5D /* 🪧Situation.swift in Sources */,
 				F53858452A9C797100A0D72D /* 🪧ContainerBackground.swift in Sources */,
+				FCAD6B4F2EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F53858372A9C78CD00A0D72D /* 🪧PlaceholderView.swift in Sources */,
 				F51E3A432A8CB28900F32F4F /* 📝NoteModel.swift in Sources */,
 				F53CB0C12A9D5C860039FC31 /* 🪧SampleTextInApp.swift in Sources */,
@@ -1644,6 +1660,7 @@
 				FCAD6B3A2EF18A8D00ADBD15 /* 📝DrawingData.swift in Sources */,
 				1DC0D2142E6435AF00240332 /* temporary.swift in Sources */,
 				F5F9D66F2A9AC5BE008CD67F /* ♻️BaseModelVer_1_1.swift in Sources */,
+				FCAD6B522EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F51E3A512A8CC8B800F32F4F /* 💁HowToGuide.swift in Sources */,
 				F51E3A472A8CC58800F32F4F /* 🗒️StaticInfo.swift in Sources */,
 				F51E39C92A8CAA7100F32F4F /* 🪧EntryView.swift in Sources */,
@@ -1669,9 +1686,11 @@
 				F51E3A4E2A8CC5D100F32F4F /* 📣ADComponents.swift in Sources */,
 				1DF9F75F2E652B2200DB9E09 /* 🎚️TitleTextFieldLink.swift in Sources */,
 				F5AD41032A9F1C1300202C2D /* 📣ADSheet.swift in Sources */,
+				FCAD6B572EF4362C00ADBD15 /* ImageVisionHelper.swift in Sources */,
 				F51E39E82A8CAA9800F32F4F /* 🔖Tab.swift in Sources */,
 				F53CB0BC2A9D5C1B0039FC31 /* 🪧SampleTextInApp.swift in Sources */,
 				F51E3A4F2A8CC63000F32F4F /* ℹ️InfoTab.swift in Sources */,
+				FCAD6B552EF435ED00ADBD15 /* 🎨StickerCarousel.swift in Sources */,
 				FCAD6B442EF18B4200ADBD15 /* ✏️DrawingToolbar.swift in Sources */,
 				FCAD6B452EF18B4200ADBD15 /* ✏️DrawingCanvas.swift in Sources */,
 				F5F9D6712A9AC5C6008CD67F /* 💾UserDefaultsVer_1_1.swift in Sources */,
@@ -1696,6 +1715,7 @@
 				F51E39DA2A8CAA9000F32F4F /* 📝NoteProperty.swift in Sources */,
 				F51E39D92A8CAA9000F32F4F /* 🪧EntryView.swift in Sources */,
 				F53858352A9C78CD00A0D72D /* 🪧PlaceholderView.swift in Sources */,
+				FCAD6B532EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F5606E6C2A9D87800046EC5D /* 🪧Situation.swift in Sources */,
 				F51E39F92A8CAAB600F32F4F /* Widget.swift in Sources */,
 				F50310D42A9C18560077EE5E /* ♻️BaseModelVer_1_1.swift in Sources */,
@@ -1744,6 +1764,7 @@
 				F5F9D6622A99EF5B008CD67F /* 📋AddNoteToEnvironment.swift in Sources */,
 				F51E3A572A8CD7D800F32F4F /* 🗒️StaticInfo.swift in Sources */,
 				F51E39F22A8CAAA000F32F4F /* 📝NoteTab.swift in Sources */,
+				FCAD6B4E2EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F538581F2A9C76F100A0D72D /* 🪧AccessoryFamilyView.swift in Sources */,
 				F538585F2A9C919600A0D72D /* 🪧SystemFamilyView.swift in Sources */,
 				F53CB0BD2A9D5C1B0039FC31 /* 🪧SampleTextInApp.swift in Sources */,
@@ -1777,6 +1798,7 @@
 				F51E39D72A8CAA8B00F32F4F /* 💾ICloud.swift in Sources */,
 				F53858302A9C788A00A0D72D /* 🪧AccessoryCornerView.swift in Sources */,
 				F51E39FC2A8CAAB700F32F4F /* WidgetBundle.swift in Sources */,
+				FCAD6B502EF4334C00ADBD15 /* 🎨StickerModel.swift in Sources */,
 				F53858442A9C797100A0D72D /* 🪧ContainerBackground.swift in Sources */,
 				F51E39D32A8CAA8400F32F4F /* 🎚️Model.swift in Sources */,
 				F51E39E32A8CAA9100F32F4F /* 📝NoteFamily.swift in Sources */,
@@ -1825,6 +1847,7 @@
 				CURRENT_PROJECT_VERSION = 29;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1832,6 +1855,7 @@
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "macOS/🧰SupportingFiles/Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Ryo Yamashita";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1840,7 +1864,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.4;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.macos;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
@@ -1861,6 +1885,7 @@
 				CURRENT_PROJECT_VERSION = 29;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1868,6 +1893,7 @@
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "macOS/🧰SupportingFiles/Info.plist";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Ryo Yamashita";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1876,7 +1902,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.4;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.macos;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1893,6 +1919,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 29;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1906,7 +1933,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.4;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.widgetForMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.macos.widget;
 				PRODUCT_NAME = LockInNote;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -1925,6 +1952,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 29;
 				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1938,7 +1966,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.4;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.widgetForMac;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.macos.widget;
 				PRODUCT_NAME = LockInNote;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -2081,10 +2109,12 @@
 				CODE_SIGN_ENTITLEMENTS = "iOS, visionOS/🧰SupportingFiles/iOS, visionOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = luvly;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -2097,7 +2127,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly;
 				PRODUCT_NAME = LockInNote;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -2118,10 +2148,12 @@
 				CODE_SIGN_ENTITLEMENTS = "iOS, visionOS/🧰SupportingFiles/iOS, visionOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = luvly;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -2134,7 +2166,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly;
 				PRODUCT_NAME = LockInNote;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -2155,6 +2187,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Widget/iOS, visionOS/iOS, visionOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Widget/iOS, visionOS/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
@@ -2166,7 +2199,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.LINWidget;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.widget;
 				PRODUCT_NAME = LockInNoteWidget;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
@@ -2188,6 +2221,7 @@
 				CODE_SIGN_ENTITLEMENTS = "Widget/iOS, visionOS/iOS, visionOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Widget/iOS, visionOS/Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
@@ -2199,7 +2233,7 @@
 					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 1.3;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.LINWidget;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.widget;
 				PRODUCT_NAME = LockInNoteWidget;
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator xros xrsimulator";
@@ -2222,18 +2256,19 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "watchOS/🧰SupportingFiles/Info.plist";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = net.aaaakkkkssssttttnnnn.LockInNote;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.riskcreatives.luvly;
 				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.watch;
 				PRODUCT_NAME = LockInNote;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -2253,18 +2288,19 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "watchOS/🧰SupportingFiles/Info.plist";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = net.aaaakkkkssssttttnnnn.LockInNote;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.riskcreatives.luvly;
 				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.watchkitapp;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.watch;
 				PRODUCT_NAME = LockInNote;
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -2283,6 +2319,7 @@
 				CODE_SIGN_ENTITLEMENTS = Widget/watchOS/watchOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/watchOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
@@ -2294,7 +2331,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.watchkitapp.LINComplication;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.watch.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -2313,6 +2350,7 @@
 				CODE_SIGN_ENTITLEMENTS = Widget/watchOS/watchOS.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
+				DEVELOPMENT_TEAM = 8H5C9P92ZB;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Widget/watchOS/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = LockInNote;
@@ -2324,7 +2362,7 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MARKETING_VERSION = 1.2;
-				PRODUCT_BUNDLE_IDENTIFIER = net.aaaakkkkssssttttnnnn.LockInNote.watchkitapp.LINComplication;
+				PRODUCT_BUNDLE_IDENTIFIER = com.riskcreatives.luvly.watch.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;

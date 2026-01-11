@@ -16,9 +16,20 @@ struct 📝NoteTab: View {
                         .ignoresSafeArea()
                 } else {
                     ScrollView {
-                        VStack(spacing: 20) {
+                        VStack(spacing: 12) {
                             🖊DrawingCanvas(isExpanded: self.$isDrawingExpanded)
                                 .frame(maxWidth: 650)
+                            
+                            Text("🎨 STICKER CAROUSEL TEST 🎨")
+                                .font(.title)
+                                .padding(40)
+                                .background(Color.red)
+                                .foregroundColor(.white)
+                            
+                            🎨StickerCarousel { sticker in
+                                💥Feedback.light()
+                            }
+                            .frame(maxWidth: 650)
                         }
                         .padding(.top, 20)
                     }
