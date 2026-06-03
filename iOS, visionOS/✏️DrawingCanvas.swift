@@ -6,6 +6,8 @@ struct 🖊DrawingCanvas: View {
     @Binding var isExpanded: Bool
     @State private var canvasView = PKCanvasView()
     @State private var selectedTool: 🖊DrawingTool = .pen
+    @State private var selectedColor: Color = .black
+    @State private var showColorPicker: Bool = false
     @State private var autoSaveTimer: Timer?
     @State private var placedStickers: [PlacedSticker] = []
     
@@ -65,6 +67,8 @@ struct 🖊DrawingCanvas: View {
             if self.isExpanded {
                 🖊DrawingToolbar(
                     selectedTool: self.$selectedTool,
+                    selectedColor: self.$selectedColor,
+                    showColorPicker: self.$showColorPicker,
                     canvasView: self.canvasView,
                     onClose: {
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -102,6 +106,7 @@ private extension 🖊DrawingCanvas {
         🖊CanvasViewRepresentable(
             canvasView: self.$canvasView,
             selectedTool: self.$selectedTool,
+            selectedColor: self.$selectedColor,
             isExpanded: self.isExpanded
         )
     }
@@ -153,13 +158,21 @@ private extension 🖊DrawingCanvas {
     }
     
     func updateTool() {
+        let uiColor = UIColor(selectedColor)
+        
         switch self.selectedTool {
-            case .pen:
-                self.canvasView.tool = PKInkingTool(.pen, color: .black, width: 3)
-            case .marker:
-                self.canvasView.tool = PKInkingTool(.marker, color: .black, width: 15)
-            case .eraser:
-                self.canvasView.tool = PKEraserTool(.vector)
+        case .pencil:
+            self.canvasView.tool = PKInkingTool(.pencil, color: uiColor, width: 2)
+        case .pen:
+            self.canvasView.tool = PKInkingTool(.pen, color: uiColor, width: 3)
+        case .marker:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor, width: 20)
+        case .highlighter:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor.withAlphaComponent(0.4), width: 30)
+        case .eraser:
+            self.canvasView.tool = PKEraserTool(.vector)
+        case .eraserObject:
+            self.canvasView.tool = PKEraserTool(.bitmap)
         }
     }
     
@@ -240,6 +253,7 @@ private extension 🖊DrawingCanvas {
 struct 🖊CanvasViewRepresentable: UIViewRepresentable {
     @Binding var canvasView: PKCanvasView
     @Binding var selectedTool: 🖊DrawingTool
+    @Binding var selectedColor: Color
     let isExpanded: Bool
     
     func makeUIView(context: Context) -> PKCanvasView {
@@ -262,13 +276,21 @@ struct 🖊CanvasViewRepresentable: UIViewRepresentable {
     }
     
     private func updateTool() {
+        let uiColor = UIColor(selectedColor)
+        
         switch self.selectedTool {
-            case .pen:
-                self.canvasView.tool = PKInkingTool(.pen, color: .black, width: 3)
-            case .marker:
-                self.canvasView.tool = PKInkingTool(.marker, color: .black, width: 15)
-            case .eraser:
-                self.canvasView.tool = PKEraserTool(.vector)
+        case .pencil:
+            self.canvasView.tool = PKInkingTool(.pencil, color: uiColor, width: 2)
+        case .pen:
+            self.canvasView.tool = PKInkingTool(.pen, color: uiColor, width: 3)
+        case .marker:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor, width: 20)
+        case .highlighter:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor.withAlphaComponent(0.4), width: 30)
+        case .eraser:
+            self.canvasView.tool = PKEraserTool(.vector)
+        case .eraserObject:
+            self.canvasView.tool = PKEraserTool(.bitmap)
         }
     }
     
@@ -287,10 +309,35 @@ struct 🖊CanvasViewRepresentable: UIViewRepresentable {
 
 // MARK: - Drawing Tool Enum
 
-enum 🖊DrawingTool {
+enum 🖊DrawingTool: CaseIterable {
+    case pencil
     case pen
     case marker
+    case highlighter
     case eraser
+    case eraserObject
+    
+    var icon: String {
+        switch self {
+        case .pencil: return "pencil"
+        case .pen: return "pencil.tip"
+        case .marker: return "paintbrush.pointed.fill"
+        case .highlighter: return "highlighter"
+        case .eraser: return "eraser.line.dashed"
+        case .eraserObject: return "eraser.fill"
+        }
+    }
+    
+    var displayName: String {
+        switch self {
+        case .pencil: return "Pencil"
+        case .pen: return "Pen"
+        case .marker: return "Marker"
+        case .highlighter: return "Highlighter"
+        case .eraser: return "Eraser"
+        case .eraserObject: return "Object Eraser"
+        }
+    }
 }
 
 // MARK: - Placed Sticker

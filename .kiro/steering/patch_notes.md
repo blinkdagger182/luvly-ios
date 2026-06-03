@@ -4,6 +4,66 @@
 
 ---
 
+## 2025-01-11 - Extensive PencilKit Drawing Tools & Color Picker
+
+- **Changed**: Expanded drawing tools from 3 to 6 tools with full color customization
+- **Files**:
+  - `iOS, visionOS/✏️DrawingCanvas.swift` (modified) - Added color state, updated tool handling for all new tools
+  - `iOS, visionOS/✏️DrawingToolbar.swift` (modified) - Complete redesign with scrollable tools and color picker
+  - `iOS, visionOS/🖊ExpandedDrawingView.swift` (modified) - Added color support for expanded drawing view
+- **Reason**: Provide comprehensive drawing capabilities with professional-grade tools and color options
+- **Technical Notes**:
+  - Changed enum from `✏️DrawingTool` to `🖊DrawingTool` due to Swift parser limitations with ✏️ emoji in type names
+  - File names still use ✏️ emoji (which is fine), but all type declarations use 🖊 emoji
+  - This follows existing project convention where drawing types use 🖊 emoji
+- **New Drawing Tools**:
+  - **Pencil**: Fine detail work (2pt width)
+  - **Pen**: Standard drawing (3pt width)
+  - **Marker**: Bold strokes (20pt width)
+  - **Highlighter**: Semi-transparent highlighting (30pt width, 40% opacity)
+  - **Eraser (Vector)**: Removes individual strokes
+  - **Object Eraser (Bitmap)**: Erases portions of strokes
+- **Color Features**:
+  - 14 preset colors (black, white, gray, red, orange, yellow, green, mint, cyan, blue, indigo, purple, pink, brown)
+  - Custom color picker with full spectrum selection
+  - Color button shows current selected color
+  - Color picker toggles with smooth animation
+  - Color disabled for eraser tools
+- **UI Improvements**:
+  - Horizontal scrollable toolbar for all tools
+  - Tool names displayed below icons
+  - Selected tool highlighted with background
+  - Color picker expands above toolbar
+  - Preset colors in grid layout
+  - Custom ColorPicker for advanced selection
+- **Impact**:
+  - Users can now create detailed, colorful drawings
+  - Professional-grade tool selection
+  - Intuitive color selection workflow
+  - All colors persist with drawing data
+
+---
+
+## 2025-01-11 - Sticker White Outline & Improved Pinch Gesture
+
+- **Changed**: Added white outline to stickers and improved two-finger pinch-to-zoom gesture
+- **Files**:
+  - `✏️DrawingCanvas.swift` (modified) - Enhanced sticker rendering with white outline and better scale gesture
+- **Reason**: Improve sticker visibility and user interaction with proper two-finger scaling
+- **Implementation Details**:
+  - White outline: Uses background layer with same image, slightly larger (+6pt), blurred, and white-tinted
+  - Pinch gesture: Changed to `.simultaneousGesture()` for proper two-finger interaction
+  - Scale limits: Constrained between 0.3x and 5.0x to prevent extreme sizes
+  - Scale persistence: `onEnded` callback commits scale changes and saves to iCloud
+  - Gesture calculation: Uses `placed.scale * value.magnitude` for relative scaling from current size
+- **Impact**:
+  - Stickers now have visible white border/glow effect for better contrast
+  - Two-finger pinch gesture works smoothly for expanding/contracting stickers
+  - Scale changes persist across app launches via iCloud sync
+  - Prevents accidental extreme scaling with min/max limits
+
+---
+
 ## 2025-12-17 - Fixed Drawing Save + Zoom Issues with Canvas Manager
 
 - **Changed**: Rewrote canvas architecture to fix both save persistence and zoom coordinate issues

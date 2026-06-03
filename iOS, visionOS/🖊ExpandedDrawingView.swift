@@ -7,6 +7,8 @@ struct 🖊ExpandedDrawingView: View {
     
     @State private var canvasView = PKCanvasView()
     @State private var selectedTool: 🖊DrawingTool = .pen
+    @State private var selectedColor: Color = .black
+    @State private var showColorPicker: Bool = false
     @State private var autoSaveTimer: Timer?
     
     var body: some View {
@@ -14,11 +16,14 @@ struct 🖊ExpandedDrawingView: View {
             🖊CanvasViewRepresentable(
                 canvasView: self.$canvasView,
                 selectedTool: self.$selectedTool,
+                selectedColor: self.$selectedColor,
                 isExpanded: true
             )
             
             🖊DrawingToolbar(
                 selectedTool: self.$selectedTool,
+                selectedColor: self.$selectedColor,
+                showColorPicker: self.$showColorPicker,
                 canvasView: self.canvasView,
                 onClose: {
                     self.saveDrawing()
@@ -47,13 +52,21 @@ private extension 🖊ExpandedDrawingView {
     }
     
     func updateTool() {
+        let uiColor = UIColor(selectedColor)
+        
         switch self.selectedTool {
-            case .pen:
-                self.canvasView.tool = PKInkingTool(.pen, color: .black, width: 3)
-            case .marker:
-                self.canvasView.tool = PKInkingTool(.marker, color: .black, width: 15)
-            case .eraser:
-                self.canvasView.tool = PKEraserTool(.vector)
+        case .pencil:
+            self.canvasView.tool = PKInkingTool(.pencil, color: uiColor, width: 2)
+        case .pen:
+            self.canvasView.tool = PKInkingTool(.pen, color: uiColor, width: 3)
+        case .marker:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor, width: 20)
+        case .highlighter:
+            self.canvasView.tool = PKInkingTool(.marker, color: uiColor.withAlphaComponent(0.4), width: 30)
+        case .eraser:
+            self.canvasView.tool = PKEraserTool(.vector)
+        case .eraserObject:
+            self.canvasView.tool = PKEraserTool(.bitmap)
         }
     }
     
