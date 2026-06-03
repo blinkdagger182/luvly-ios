@@ -62,9 +62,11 @@ struct 🖊DrawingCanvas: View {
                 }
             }
             
-
-            
             if self.isExpanded {
+                🎨StickerCarousel { sticker in
+                    addStickerToCanvas(sticker)
+                }
+                
                 🖊DrawingToolbar(
                     selectedTool: self.$selectedTool,
                     selectedColor: self.$selectedColor,

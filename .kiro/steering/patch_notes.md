@@ -4,11 +4,46 @@
 
 ---
 
+## 2025-01-11 - Improved Sticker Gestures & Delete Functionality
+
+- **Changed**: Enhanced sticker interaction with smooth two-finger zoom and delete capability
+- **Files**:
+  - `iOS, visionOS/📝NotesGridView.swift` (modified) - Improved gesture handling and added delete button
+- **Reason**: Make sticker manipulation more intuitive and allow users to remove unwanted stickers
+- **Gesture Improvements**:
+  - **Two-finger zoom**: MagnificationGesture now properly tracks base scale for smooth zooming
+  - **Base scale tracking**: Stores initial scale at gesture start, applies magnification to base
+  - **Smooth scaling**: No more jumpy or wonky zoom behavior
+  - **Drag gesture**: Selects sticker and updates position in real-time
+  - **Tap to select**: Single tap selects/deselects sticker
+  - **Background tap**: Tap canvas background to deselect all stickers
+- **Delete Feature**:
+  - Red X button appears in top-right corner when sticker is selected
+  - Removes sticker from both local state and iCloud storage
+  - Users can re-add deleted stickers from the sticker carousel
+  - Automatic deselection after deletion
+- **Visual Feedback**:
+  - Selected sticker shows delete button
+  - Haptic feedback on selection and deletion
+  - White outline remains for better visibility
+- **Technical Implementation**:
+  - `stickerBaseScale` dictionary tracks scale at gesture start
+  - Cleared after gesture ends to prepare for next interaction
+  - Scale clamped between 0.3x and 5.0x
+  - Position and scale saved to iCloud on gesture end
+- **Impact**:
+  - Much smoother two-finger pinch-to-zoom experience
+  - Easy sticker removal without leaving the canvas
+  - Better sticker management workflow
+  - Cleaner canvas when stickers are no longer needed
+
+---
+
 ## 2025-01-11 - Extensive PencilKit Drawing Tools & Color Picker
 
 - **Changed**: Expanded drawing tools from 3 to 6 tools with full color customization
 - **Files**:
-  - `iOS, visionOS/✏️DrawingCanvas.swift` (modified) - Added color state, updated tool handling for all new tools
+  - `iOS, visionOS/✏️DrawingCanvas.swift` (modified) - Added color state, updated tool handling, added sticker carousel to expanded view
   - `iOS, visionOS/✏️DrawingToolbar.swift` (modified) - Complete redesign with scrollable tools and color picker
   - `iOS, visionOS/🖊ExpandedDrawingView.swift` (modified) - Added color support for expanded drawing view
 - **Reason**: Provide comprehensive drawing capabilities with professional-grade tools and color options
@@ -16,6 +51,11 @@
   - Changed enum from `✏️DrawingTool` to `🖊DrawingTool` due to Swift parser limitations with ✏️ emoji in type names
   - File names still use ✏️ emoji (which is fine), but all type declarations use 🖊 emoji
   - This follows existing project convention where drawing types use 🖊 emoji
+- **Layout When Expanded**:
+  - Top toolbar: Undo, Redo, Close buttons
+  - Canvas area: Drawing surface with placed stickers
+  - Sticker carousel: Add images and tap to place on canvas
+  - Drawing toolbar: 6 tools, color picker, done button
 - **New Drawing Tools**:
   - **Pencil**: Fine detail work (2pt width)
   - **Pen**: Standard drawing (3pt width)
@@ -36,11 +76,13 @@
   - Color picker expands above toolbar
   - Preset colors in grid layout
   - Custom ColorPicker for advanced selection
+  - Sticker carousel integrated into expanded canvas view
 - **Impact**:
   - Users can now create detailed, colorful drawings
   - Professional-grade tool selection
   - Intuitive color selection workflow
   - All colors persist with drawing data
+  - Stickers and drawing tools accessible in same view
 
 ---
 
