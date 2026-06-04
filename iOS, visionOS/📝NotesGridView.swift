@@ -642,7 +642,7 @@ struct StickerView: View {
                 onScaleChanged(value)
             }
             .onEnded { value in
-                onScaleEnded(value)
+                onScaleEnded(value) 
             }
     }
 }

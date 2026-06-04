@@ -7,6 +7,8 @@ struct ContentView: View {
             📝NotesGridView()
                 .tag(🔖Tab.notesList)
                 .tabItem { Label("Notes", systemImage: "square.grid.2x2") }
+
+            ReelsListView()
             
             🛠️OptionTab()
             ℹ️InfoTab()

@@ -1,0 +1,4 @@
+project_id = "luvly"
+
+[functions.reels]
+verify_jwt = false
