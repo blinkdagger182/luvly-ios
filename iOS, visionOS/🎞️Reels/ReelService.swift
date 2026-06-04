@@ -55,6 +55,18 @@ struct ReelService {
         return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
     }
 
+    func submitOCR(reelID: UUID, entries: [ReelOCREntry]) async throws -> ReelItem {
+        var request = URLRequest(url: self.baseURL.appending(path: reelID.uuidString))
+        request.httpMethod = "PATCH"
+        request.httpBody = try Self.encoder.encode(["entries": entries])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
+    }
+
     private func authorize(_ request: inout URLRequest) {
         request.setValue(self.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(self.anonKey)", forHTTPHeaderField: "Authorization")
@@ -77,6 +89,12 @@ struct ReelService {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder
+    }()
+
+    private static let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
     }()
 }
 

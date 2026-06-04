@@ -13,6 +13,7 @@ type NormalizedReel = Record<string, unknown> & {
   duration_seconds?: number | null;
   transcript?: unknown;
   caption?: string | null;
+  ocr_entries?: OCREntry[];
 };
 
 type ReelSummary = {
@@ -28,10 +29,16 @@ type TranscriptSegment = {
   text: string;
 };
 
+type OCREntry = {
+  timestamp_seconds: number;
+  text: string;
+  confidence?: number | null;
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
 };
 
 const supabaseUrl = requiredEnv("NEXT_PUBLIC_SUPABASE_URL");
@@ -67,6 +74,11 @@ Deno.serve(async (request) => {
       return json(await importReel(sourceUrl), 201);
     }
 
+    if (request.method === "PATCH" && id) {
+      const body = await request.json();
+      return json(await updateReelOCR(id, body.entries));
+    }
+
     return json({ error: "Method not allowed" }, 405);
   } catch (error) {
     console.error(error);
@@ -77,9 +89,10 @@ Deno.serve(async (request) => {
 async function listReels() {
   const { data, error } = await supabase
     .from("reels")
-    .select("*, reel_segments(*)")
+    .select("*, reel_segments(*), reel_ocr_entries(*)")
     .order("created_at", { ascending: false })
-    .order("order_index", { foreignTable: "reel_segments", ascending: true });
+    .order("order_index", { foreignTable: "reel_segments", ascending: true })
+    .order("timestamp_seconds", { foreignTable: "reel_ocr_entries", ascending: true });
 
   if (error) throw error;
   return { reels: data ?? [] };
@@ -88,12 +101,77 @@ async function listReels() {
 async function getReel(id: string) {
   const { data, error } = await supabase
     .from("reels")
-    .select("*, reel_segments(*)")
+    .select("*, reel_segments(*), reel_ocr_entries(*)")
     .eq("id", id)
     .single();
 
   if (error) throw error;
   return { reel: data };
+}
+
+async function updateReelOCR(id: string, rawEntries: unknown) {
+  const entries = normalizeOCREntries(rawEntries);
+
+  await supabase.from("reel_ocr_entries").delete().eq("reel_id", id);
+
+  if (entries.length > 0) {
+    const { error } = await supabase.from("reel_ocr_entries").insert(
+      entries.map((entry) => ({
+        reel_id: id,
+        timestamp_seconds: entry.timestamp_seconds,
+        text: entry.text,
+        confidence: entry.confidence ?? null,
+      })),
+    );
+    if (error) throw error;
+  }
+
+  const { data: reel, error: reelError } = await supabase
+    .from("reels")
+    .select("*")
+    .eq("id", id)
+    .single();
+
+  if (reelError) throw reelError;
+
+  const input = {
+    ...reel,
+    ocr_entries: entries,
+  } as NormalizedReel;
+  const summary = await summarizeReel(input);
+  const segments = normalizeSegments(summary.segments, input);
+
+  const { error: updateError } = await supabase
+    .from("reels")
+    .update({
+      title: summary.title,
+      category: summary.category,
+      summary: summary.summary,
+      status: "ready",
+    })
+    .eq("id", id);
+
+  if (updateError) throw updateError;
+
+  await supabase.from("reel_segments").delete().eq("reel_id", id);
+
+  if (segments.length > 0) {
+    const { error: segmentError } = await supabase.from("reel_segments").insert(
+      segments.map((segment, index) => ({
+        reel_id: id,
+        start_seconds: segment.start_seconds,
+        end_seconds: segment.end_seconds,
+        title: segment.title,
+        description: segment.description,
+        raw_text: segment.raw_text ?? null,
+        tags: segment.tags,
+        order_index: index,
+      })),
+    );
+    if (segmentError) throw segmentError;
+  }
+
+  return await getReel(id);
 }
 
 async function importReel(sourceUrl: string) {
@@ -179,7 +257,7 @@ async function runApify(sourceUrl: string) {
     resultsLimit: 1,
     skipPinnedPosts: false,
     includeSharesCount: false,
-    includeTranscript: true,
+    includeTranscript: false,
     includeDownloadedVideo: false,
   };
 
@@ -260,6 +338,8 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "Each segment must have start_seconds, end_seconds, title, description, raw_text, and tags.",
       "Use snake_case keys exactly. Segments must use integer seconds and should cover the reel in order.",
       "When timestamped transcript items are provided, choose segment boundaries from those timestamps.",
+      "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context.",
+      "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
       "Return 4 to 8 high-signal segments. Do not return null values.",
       JSON.stringify(input),
     ].join("\n\n"),
@@ -343,6 +423,10 @@ function fallbackSegments(input: NormalizedReel): Segment[] {
     return fallbackTimestampedSegments(input.transcript as TranscriptSegment[]);
   }
 
+  if (hasOCREntries(input.ocr_entries)) {
+    return fallbackOCRSegments(input.ocr_entries);
+  }
+
   const duration = clampInt(input.duration_seconds, 60);
   const transcript = transcriptText(input.transcript) || input.caption || "Saved reel.";
   const sentences = transcript
@@ -361,6 +445,27 @@ function fallbackSegments(input: NormalizedReel): Segment[] {
       description: text,
       raw_text: text,
       tags: [],
+    };
+  });
+}
+
+function fallbackOCRSegments(entries: OCREntry[]): Segment[] {
+  const usefulEntries = entries
+    .filter((entry) => entry.text.trim().length > 0)
+    .sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
+  const groups = chunkItems(usefulEntries, Math.min(7, Math.max(1, usefulEntries.length)));
+
+  return groups.map((group, index) => {
+    const text = dedupeTexts(group.map((entry) => entry.text)).join(" ");
+    const start = group[0].timestamp_seconds;
+    const nextGroupStart = groups[index + 1]?.[0]?.timestamp_seconds;
+    return {
+      start_seconds: start,
+      end_seconds: Math.max(start + 1, nextGroupStart ?? start + 5),
+      title: titleFromText(text),
+      description: text,
+      raw_text: text,
+      tags: ["ocr"],
     };
   });
 }
@@ -427,6 +532,47 @@ function hasTimestampedTranscript(transcript: unknown): transcript is Transcript
       typeof segment?.end === "number" &&
       typeof segment?.text === "string";
   });
+}
+
+function hasOCREntries(entries: unknown): entries is OCREntry[] {
+  return Array.isArray(entries) && entries.some((entry) => {
+    const ocrEntry = objectValue(entry);
+    return typeof ocrEntry?.timestamp_seconds === "number" &&
+      typeof ocrEntry?.text === "string" &&
+      ocrEntry.text.trim().length > 0;
+  });
+}
+
+function normalizeOCREntries(rawEntries: unknown): OCREntry[] {
+  if (!Array.isArray(rawEntries)) return [];
+
+  return rawEntries
+    .map((rawEntry) => {
+      const entry = objectValue(rawEntry);
+      return {
+        timestamp_seconds: clampInt(
+          entry?.timestamp_seconds ?? entry?.timestampSeconds ?? entry?.time ?? entry?.timestamp,
+          0,
+        ),
+        text: textOrFallback(entry?.text, ""),
+        confidence: numberValue(entry?.confidence),
+      };
+    })
+    .filter((entry) => entry.text.length > 0)
+    .sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
+}
+
+function dedupeTexts(texts: string[]) {
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const text of texts) {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    const key = normalized.toLowerCase();
+    if (normalized.length === 0 || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(normalized);
+  }
+  return deduped;
 }
 
 async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Promise<TranscriptSegment[] | null> {

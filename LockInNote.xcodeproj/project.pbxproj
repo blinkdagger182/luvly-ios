@@ -2265,7 +2265,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = luvly;
+				INFOPLIST_KEY_CFBundleDisplayName = Reelplay;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -2304,7 +2304,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "iOS, visionOS/🧰SupportingFiles/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = luvly;
+				INFOPLIST_KEY_CFBundleDisplayName = Reelplay;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

@@ -2,6 +2,8 @@
 
 This backend imports Instagram/TikTok reel URLs through Apify, summarizes them with OpenAI, and stores reels plus timestamped segments in Supabase.
 
+Apify transcript billing is intentionally disabled. The reel Actor input uses `includeTranscript: false` so imports do not trigger the paid transcript add-on. When timestamped text is needed, the Edge Function transcribes from the media URL with OpenAI instead.
+
 ## Local config
 
 Secrets live in `backend/.env`.

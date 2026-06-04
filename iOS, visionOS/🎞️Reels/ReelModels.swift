@@ -17,6 +17,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
     let errorMessage: String?
     let createdAt: String?
     let segments: [ReelSegment]
+    let ocrEntries: [ReelOCREntry]?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -35,6 +36,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case errorMessage = "error_message"
         case createdAt = "created_at"
         case segments = "reel_segments"
+        case ocrEntries = "reel_ocr_entries"
     }
 }
 
@@ -57,5 +59,19 @@ struct ReelSegment: Identifiable, Codable, Hashable {
         case rawText = "raw_text"
         case tags
         case orderIndex = "order_index"
+    }
+}
+
+struct ReelOCREntry: Identifiable, Codable, Hashable {
+    var id = UUID()
+    let timestampSeconds: Int
+    let text: String
+    let confidence: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case timestampSeconds = "timestamp_seconds"
+        case text
+        case confidence
     }
 }
