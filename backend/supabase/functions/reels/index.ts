@@ -114,6 +114,19 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
 
   await supabase.from("reel_ocr_entries").delete().eq("reel_id", id);
 
+  if (entries.length === 0) {
+    const { error } = await supabase
+      .from("reels")
+      .update({
+        status: "ocr_failed",
+        error_message: "On-device OCR found no readable on-screen text.",
+      })
+      .eq("id", id);
+
+    if (error) throw error;
+    return await getReel(id);
+  }
+
   if (entries.length > 0) {
     const { error } = await supabase.from("reel_ocr_entries").insert(
       entries.map((entry) => ({
@@ -203,6 +216,7 @@ async function importReel(sourceUrl: string) {
     const normalized = await normalizeApifyItem(sourceUrl, apifyItem);
     const summary = await summarizeReel(normalized);
 
+    const needsVisualOCR = typeof normalized.video_url === "string" && normalized.video_url.length > 0;
     const { data: reel, error: updateError } = await supabase
       .from("reels")
       .update({
@@ -211,7 +225,7 @@ async function importReel(sourceUrl: string) {
         category: summary.category,
         summary: summary.summary,
         raw_payload: apifyItem,
-        status: "ready",
+        status: needsVisualOCR ? "ready_basic" : "ready",
       })
       .eq("id", created.id)
       .select()
@@ -340,6 +354,8 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "When timestamped transcript items are provided, choose segment boundaries from those timestamps.",
       "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context.",
       "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
+      "If on-screen text changes over time, each meaningful text change should usually become its own segment.",
+      "For workout/list reels, split visible exercise or step lines into separate replayable segments when possible.",
       "Return 4 to 8 high-signal segments. Do not return null values.",
       JSON.stringify(input),
     ].join("\n\n"),
@@ -419,15 +435,15 @@ function normalizeSegment(rawSegment: unknown, index: number, duration: number):
 }
 
 function fallbackSegments(input: NormalizedReel): Segment[] {
+  const duration = clampInt(input.duration_seconds, 60);
+  if (hasOCREntries(input.ocr_entries)) {
+    return fallbackOCRSegments(input.ocr_entries, duration);
+  }
+
   if (hasTimestampedTranscript(input.transcript)) {
     return fallbackTimestampedSegments(input.transcript as TranscriptSegment[]);
   }
 
-  if (hasOCREntries(input.ocr_entries)) {
-    return fallbackOCRSegments(input.ocr_entries);
-  }
-
-  const duration = clampInt(input.duration_seconds, 60);
   const transcript = transcriptText(input.transcript) || input.caption || "Saved reel.";
   const sentences = transcript
     .split(/(?<=[.!?])\s+|\n+/)
@@ -449,25 +465,58 @@ function fallbackSegments(input: NormalizedReel): Segment[] {
   });
 }
 
-function fallbackOCRSegments(entries: OCREntry[]): Segment[] {
+function fallbackOCRSegments(entries: OCREntry[], duration: number): Segment[] {
   const usefulEntries = entries
     .filter((entry) => entry.text.trim().length > 0)
     .sort((a, b) => a.timestamp_seconds - b.timestamp_seconds);
-  const groups = chunkItems(usefulEntries, Math.min(7, Math.max(1, usefulEntries.length)));
+  const visualEvents = expandOCRVisualEvents(usefulEntries, duration);
 
-  return groups.map((group, index) => {
-    const text = dedupeTexts(group.map((entry) => entry.text)).join(" ");
-    const start = group[0].timestamp_seconds;
-    const nextGroupStart = groups[index + 1]?.[0]?.timestamp_seconds;
+  return visualEvents.map((entry, index) => {
+    const text = entry.text.trim();
+    const start = clampInt(entry.timestamp_seconds, 0);
+    const nextStart = visualEvents[index + 1]?.timestamp_seconds;
     return {
       start_seconds: start,
-      end_seconds: Math.max(start + 1, nextGroupStart ?? start + 5),
+      end_seconds: Math.max(start + 1, Math.min(duration, nextStart ?? start + Math.max(2, Math.ceil(duration / Math.max(visualEvents.length, 1))))),
       title: titleFromText(text),
       description: text,
       raw_text: text,
       tags: ["ocr"],
     };
   });
+}
+
+function expandOCRVisualEvents(entries: OCREntry[], duration: number): OCREntry[] {
+  const collapsed: OCREntry[] = [];
+  let previousKey = "";
+
+  for (const entry of entries) {
+    const key = normalizeOCRText(entry.text);
+    if (!key || key === previousKey) continue;
+    previousKey = key;
+    collapsed.push({ ...entry, text: dedupeTexts(ocrTextLines(entry.text)).join("\n") || entry.text });
+  }
+
+  const expanded: OCREntry[] = [];
+  for (const entry of collapsed) {
+    const lines = ocrTextLines(entry.text);
+    const shouldSplitLines = collapsed.length <= 2 && lines.length >= 2;
+
+    if (!shouldSplitLines) {
+      expanded.push({ ...entry, text: lines.join(" ") || entry.text });
+      continue;
+    }
+
+    lines.slice(0, 8).forEach((line, index) => {
+      expanded.push({
+        ...entry,
+        timestamp_seconds: Math.min(duration - 1, entry.timestamp_seconds + index),
+        text: line,
+      });
+    });
+  }
+
+  return expanded.length > 0 ? expanded : entries;
 }
 
 function fallbackTimestampedSegments(transcript: TranscriptSegment[]): Segment[] {
@@ -573,6 +622,23 @@ function dedupeTexts(texts: string[]) {
     deduped.push(normalized);
   }
   return deduped;
+}
+
+function ocrTextLines(text: string): string[] {
+  return text
+    .split(/\n+|(?:\s{2,})/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 1)
+    .filter((line) => !/^[^\p{L}\p{N}]+$/u.test(line));
+}
+
+function normalizeOCRText(text: string): string {
+  return dedupeTexts(ocrTextLines(text))
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Promise<TranscriptSegment[] | null> {

@@ -1,4 +1,5 @@
 import AVKit
+import CoreImage
 import SwiftUI
 import UIKit
 import Vision
@@ -19,6 +20,7 @@ struct ReelplayRootView: View {
     @State private var selectedHomeCollectionID: String?
     @State private var isLoading = false
     @State private var isImporting = false
+    @State private var isProcessingPendingOCR = false
     @State private var importStageIndex = 0
     @State private var importingURL: URL?
     @State private var isPreparingSelectedReel = false
@@ -160,6 +162,7 @@ struct ReelplayRootView: View {
             self.errorMessage = nil
             self.isLoading = true
             self.reels = try await ReelService().listReels()
+            Task { await self.processPendingOCRReelsIfNeeded() }
         } catch {
             self.errorMessage = error.localizedDescription
         }
@@ -184,9 +187,19 @@ struct ReelplayRootView: View {
             self.importingURL = url
             self.importStageIndex = 0
 
-            let reel = try await ReelService().importReel(url: url)
+            var reel = try await ReelService().importReel(url: url)
             self.reels.removeAll { $0.id == reel.id }
             self.reels.insert(reel, at: 0)
+
+            if reel.needsOCRProcessing {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    self.importStageIndex = max(self.importStageIndex, 2)
+                }
+                reel = await self.processOCRWithTimeout(for: reel)
+                self.reels.removeAll { $0.id == reel.id }
+                self.reels.insert(reel, at: 0)
+            }
+
             self.importText = ""
             self.app.sharedReelURL = nil
             self.prepareAndOpenReel(reel)
@@ -213,7 +226,7 @@ struct ReelplayRootView: View {
     private func prepareAndOpenReel(_ reel: ReelItem) {
         guard !self.isPreparingSelectedReel else { return }
 
-        if reel.isMicroreelReady {
+        if !reel.needsOCRProcessing, reel.isMicroreelReady {
             self.selectedReel = reel
             return
         }
@@ -234,13 +247,30 @@ struct ReelplayRootView: View {
         }
     }
 
+    private func processPendingOCRReelsIfNeeded() async {
+        guard !self.isProcessingPendingOCR else { return }
+        let candidates = self.reels
+            .filter(\.needsOCRProcessing)
+            .prefix(3)
+
+        guard !candidates.isEmpty else { return }
+        self.isProcessingPendingOCR = true
+        defer { self.isProcessingPendingOCR = false }
+
+        for reel in candidates {
+            let updatedReel = await self.processOCR(for: reel)
+            self.reels.removeAll { $0.id == updatedReel.id }
+            self.reels.insert(updatedReel, at: 0)
+        }
+    }
+
     private func processOCRWithTimeout(for reel: ReelItem) async -> ReelItem {
         await withTaskGroup(of: ReelItem.self) { group in
             group.addTask {
                 await self.processOCR(for: reel)
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(24))
+                try? await Task.sleep(for: .seconds(90))
                 return reel
             }
 
@@ -273,7 +303,9 @@ struct ReelplayRootView: View {
                 in: videoURL,
                 durationSeconds: reel.durationSeconds
             )
-            guard !entries.isEmpty else { return reel }
+            guard !entries.isEmpty else {
+                return (try? await ReelService().submitOCR(reelID: reel.id, entries: [])) ?? reel
+            }
 
             await MainActor.run {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
@@ -432,10 +464,7 @@ private struct ReelplayHomeScreen: View {
 
                 VStack(spacing: 10) {
                     if self.isLoading && self.reels.isEmpty {
-                        ForEach(0..<3) { index in
-                            ReelRowPlaceholder()
-                                .opacity(1 - (Double(index) * 0.18))
-                        }
+                        PremiumHomeLoadingCard()
                     } else if self.reels.isEmpty {
                         EmptyHomeCard(onImport: self.onImport)
                     } else {
@@ -1219,36 +1248,189 @@ private struct EmptyHomeCard: View {
     let onImport: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(ReelplayTheme.softSurface)
-                ReelplayMark()
-                    .frame(width: 70, height: 70)
-            }
-            .frame(height: 150)
+        VStack(alignment: .leading, spacing: 20) {
+            ReelplayPreviewPanel(
+                title: "Replay any reel",
+                subtitle: "Saved moments become timestamped steps."
+            )
+            .frame(height: 214)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Save your first reel")
-                    .font(.headline.weight(.bold))
-                Text("Paste or share an Instagram or TikTok link to create timestamped microreels.")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                Text("Paste or share an Instagram or TikTok link and Reelplay will build replayable microreels from the moments that matter.")
                     .font(.subheadline)
                     .foregroundStyle(ReelplayTheme.mutedText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button(action: self.onImport) {
-                Text("Import Reel")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 46)
-                    .background(ReelplayTheme.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("Import Reel")
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)
+                .background(ReelplayTheme.black)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
-        .padding(14)
+        .padding(16)
         .background(ReelplayTheme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.black.opacity(0.04), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 22, y: 10)
+    }
+}
+
+private struct PremiumHomeLoadingCard: View {
+    @State private var pulse = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ReelplayPreviewPanel(
+                title: "Preparing your library",
+                subtitle: "Syncing saved reels and pending microreels.",
+                isLoading: true
+            )
+            .frame(height: 214)
+
+            HStack(spacing: 10) {
+                ForEach(["Reading", "OCR", "Segments"], id: \.self) { label in
+                    Text(label)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.66))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                        .background(ReelplayTheme.softSurface.opacity(0.52))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
+        }
+        .padding(16)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.black.opacity(0.04), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.06), radius: 22, y: 10)
+        .opacity(self.pulse ? 0.72 : 1)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.15).repeatForever(autoreverses: true)) {
+                self.pulse = true
+            }
+        }
+    }
+}
+
+private struct ReelplayPreviewPanel: View {
+    var title = "Replay smarter"
+    var subtitle = "Microreels are built from key moments."
+    var isLoading = false
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            ReelplayTheme.black,
+                            Color(hex: 0x1C1C1E),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.white.opacity(0.08), lineWidth: 1)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(self.title)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(.white)
+                        Text(self.subtitle)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer()
+
+                    if self.isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .scaleEffect(0.86)
+                    }
+                }
+
+                Spacer()
+
+                HStack(alignment: .bottom, spacing: 14) {
+                    ReelplayAppIconView()
+                        .frame(width: 86, height: 86)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(self.previewRows, id: \.0) { row in
+                            HStack(spacing: 8) {
+                                Text(row.0)
+                                    .font(.caption2.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(ReelplayTheme.accent)
+                                    .frame(width: 42, alignment: .leading)
+                                Capsule()
+                                    .fill(.white.opacity(row.2))
+                                    .frame(width: row.1, height: 7)
+                            }
+                        }
+                        .redacted(reason: self.isLoading ? .placeholder : [])
+                    }
+
+                    Spacer()
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    ForEach(0..<5) { index in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(index == 0 ? ReelplayTheme.accent : .white.opacity(0.16))
+                            .frame(width: index == 0 ? 34 : 18, height: 5)
+                    }
+                }
+            }
+            .padding(18)
+        }
+    }
+
+    private var previewRows: [(String, CGFloat, Double)] {
+        [
+            ("00:04", 132, 0.32),
+            ("00:11", 104, 0.24),
+            ("00:18", 156, 0.28),
+        ]
+    }
+}
+
+private struct ReelplayAppIconView: View {
+    var body: some View {
+        Image("AboutAppIcon")
+            .resizable()
+            .scaledToFit()
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18)
+                    .stroke(.white.opacity(0.14), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 8)
     }
 }
 
@@ -1444,12 +1626,8 @@ private struct ImportReelOverlay: View {
                         .frame(width: 176, height: 176)
                         .rotationEffect(.degrees(self.spin ? 360 : 0))
 
-                    Image("AboutAppIcon")
-                        .resizable()
-                        .scaledToFit()
+                    ReelplayAppIconView()
                         .frame(width: 92, height: 92)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-                        .shadow(color: .black.opacity(0.16), radius: 8, y: 5)
                         .scaleEffect(self.pulse ? 1.06 : 0.96)
                 }
 
@@ -1560,6 +1738,7 @@ private struct ReelSummaryView: View {
     @State private var expandedSegmentID: UUID?
     @State private var focusedSegmentID: UUID?
     @State private var isShowingFullscreenVideo = false
+    @State private var expandDragTranslation: CGFloat = 0
 
     init(reel: ReelItem) {
         self.reel = reel
@@ -1665,7 +1844,10 @@ private struct ReelSummaryView: View {
                     onTogglePlayPause: { self.playback.togglePlayPause() },
                     onOpenFullscreen: { self.openFullscreenVideo() }
                 )
-                .frame(height: self.heroHeight)
+                .frame(height: self.interactiveHeroHeight)
+                .contentShape(Rectangle())
+                .simultaneousGesture(self.expandVideoSwipe())
+                .shadow(color: .black.opacity(self.expandDragProgress * 0.22), radius: 26 * self.expandDragProgress, y: 16 * self.expandDragProgress)
 
                 Spacer()
             }
@@ -1709,18 +1891,18 @@ private struct ReelSummaryView: View {
                     currentSeconds: self.playback.currentSeconds,
                     durationSeconds: self.playback.durationSeconds ?? Double(self.reel.durationSeconds ?? 0),
                     isPlaying: self.playback.isPlaying,
+                    pinnedHeight: self.heroHeight,
                     onSeek: { self.playback.seek(to: $0) },
                     onTogglePlayPause: { self.playback.togglePlayPause() },
                     onDismiss: {
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                             self.isShowingFullscreenVideo = false
                         }
+                    },
+                    onCollapseToPinned: {
+                        self.isShowingFullscreenVideo = false
                     }
                 )
-                .transition(.asymmetric(
-                    insertion: .scale(scale: 0.92, anchor: .top).combined(with: .opacity),
-                    removal: .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
-                ))
                 .zIndex(30)
             }
         }
@@ -1740,6 +1922,50 @@ private struct ReelSummaryView: View {
         .onDisappear {
             guard !self.isShowingFullscreenVideo else { return }
             self.playback.pause()
+        }
+    }
+
+    private var expandDragProgress: CGFloat {
+        min(max(self.expandDragTranslation / 260, 0), 1)
+    }
+
+    private var interactiveHeroHeight: CGFloat {
+        let screenHeight = UIScreen.main.bounds.height
+        return self.heroHeight + (screenHeight - self.heroHeight) * self.expandDragProgress
+    }
+
+    private func expandVideoSwipe() -> some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { value in
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
+                guard mostlyVertical else { return }
+                self.expandDragTranslation = max(0, value.translation.height)
+            }
+            .onEnded { value in
+                let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
+                if movedDown, mostlyVertical {
+                    self.completeDragToFullscreen()
+                } else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        self.expandDragTranslation = 0
+                    }
+                }
+            }
+    }
+
+    private func completeDragToFullscreen() {
+        withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.92)) {
+            self.expandDragTranslation = 260
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                self.isShowingFullscreenVideo = true
+                self.expandDragTranslation = 0
+            }
         }
     }
 
@@ -1826,25 +2052,22 @@ private struct ReelSummaryHero: View {
         ZStack {
             Button(action: self.showControlsTemporarily) {
                 ZStack {
+                    Color.black
+
                     if let player {
-                        FullScreenReelVideoPlayer(player: player)
+                        FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspect)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         AsyncImage(url: self.reel.thumbnailURL) { image in
                             image
                                 .resizable()
-                                .scaledToFill()
+                                .scaledToFit()
                         } placeholder: {
                             ReelThumbnailPlaceholder()
                         }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 22))
-                .scaleEffect(0.92)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 34)
-                .shadow(color: .black.opacity(0.42), radius: 24, y: 12)
             }
             .buttonStyle(.plain)
 
@@ -1926,7 +2149,7 @@ private struct ReelSummaryHero: View {
         }
         .onAppear {
             self.scrubSeconds = self.currentSeconds
-            self.scheduleControlsHide()
+            self.showControlsTemporarily()
         }
         .onChange(of: self.currentSeconds) { _, seconds in
             guard !self.isScrubbing else { return }
@@ -1959,11 +2182,14 @@ private struct ReelSummaryHero: View {
 
     private func scheduleControlsHide() {
         self.hideControlsTask?.cancel()
-        self.hideControlsTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            guard !self.isScrubbing else { return }
-            withAnimation(.easeInOut(duration: 0.22)) {
-                self.areControlsVisible = false
+        self.hideControlsTask = Task {
+            try? await Task.sleep(for: .seconds(3.2))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !self.isScrubbing else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    self.areControlsVisible = false
+                }
             }
         }
     }
@@ -2520,13 +2746,16 @@ private struct ReelFullscreenVideoView: View {
     let currentSeconds: Double
     let durationSeconds: Double
     let isPlaying: Bool
+    let pinnedHeight: CGFloat
     let onSeek: (Double) -> Void
     let onTogglePlayPause: () -> Void
     let onDismiss: () -> Void
+    let onCollapseToPinned: () -> Void
     @State private var scrubSeconds: Double = 0
     @State private var isScrubbing = false
     @State private var areControlsVisible = true
     @State private var hideControlsTask: Task<Void, Never>?
+    @State private var collapseDragTranslation: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -2623,9 +2852,15 @@ private struct ReelFullscreenVideoView: View {
                 .padding(.bottom, max(24, UIApplication.shared.reelplayTopSafeArea == 0 ? 24 : 34))
             }
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: self.collapseHeight, alignment: .top)
+        .clipped()
+        .frame(maxHeight: .infinity, alignment: .top)
+        .clipShape(RoundedRectangle(cornerRadius: self.collapseCornerRadius))
+        .opacity(self.collapseOpacity)
         .onAppear {
             self.scrubSeconds = self.currentSeconds
-            self.scheduleControlsHide()
+            self.showControlsTemporarily()
         }
         .onChange(of: self.currentSeconds) { _, seconds in
             guard !self.isScrubbing else { return }
@@ -2638,6 +2873,7 @@ private struct ReelFullscreenVideoView: View {
         .onTapGesture {
             self.showControlsTemporarily()
         }
+        .simultaneousGesture(self.collapseToPinnedSwipe())
     }
 
     private var safeDuration: Double {
@@ -2646,6 +2882,58 @@ private struct ReelFullscreenVideoView: View {
 
     private var displaySeconds: Double {
         self.isScrubbing ? self.scrubSeconds : self.currentSeconds
+    }
+
+    private var collapseProgress: CGFloat {
+        min(max(-self.collapseDragTranslation / 280, 0), 1)
+    }
+
+    private var collapseHeight: CGFloat {
+        let screenHeight = UIScreen.main.bounds.height
+        return screenHeight - ((screenHeight - self.pinnedHeight) * self.collapseProgress)
+    }
+
+    private var collapseCornerRadius: CGFloat {
+        8 * self.collapseProgress
+    }
+
+    private var collapseOpacity: Double {
+        1
+    }
+
+    private func collapseToPinnedSwipe() -> some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { value in
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
+                guard mostlyVertical else { return }
+                self.collapseDragTranslation = min(0, value.translation.height)
+            }
+            .onEnded { value in
+                let movedUp = value.translation.height < -72 || value.predictedEndTranslation.height < -140
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
+                if movedUp, mostlyVertical {
+                    self.completeDragToPinned()
+                } else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        self.collapseDragTranslation = 0
+                    }
+                }
+            }
+    }
+
+    private func completeDragToPinned() {
+        withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.92)) {
+            self.collapseDragTranslation = -280
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            var transaction = Transaction()
+            transaction.animation = nil
+            withTransaction(transaction) {
+                self.collapseDragTranslation = 0
+                self.onCollapseToPinned()
+            }
+        }
     }
 
     private func showControls() {
@@ -2662,11 +2950,14 @@ private struct ReelFullscreenVideoView: View {
 
     private func scheduleControlsHide() {
         self.hideControlsTask?.cancel()
-        self.hideControlsTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
-            guard !self.isScrubbing else { return }
-            withAnimation(.easeInOut(duration: 0.22)) {
-                self.areControlsVisible = false
+        self.hideControlsTask = Task {
+            try? await Task.sleep(for: .seconds(3.2))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !self.isScrubbing else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    self.areControlsVisible = false
+                }
             }
         }
     }
@@ -2792,10 +3083,19 @@ private struct SegmentReelPlayerView: View {
 
 private extension ReelItem {
     var isMicroreelReady: Bool {
-        if let ocrEntries, !ocrEntries.isEmpty {
+        return self.segments.count >= 2
+    }
+
+    var needsOCRProcessing: Bool {
+        guard self.videoURL != nil else { return false }
+
+        let retryableStatuses = ["needs_ocr", "ready_basic", "ocr_failed"]
+        if retryableStatuses.contains(self.status) {
             return true
         }
-        return self.segments.count >= 2
+
+        let hasOCR = !(self.ocrEntries ?? []).isEmpty
+        return self.segments.count < 2 && !hasOCR
     }
 
     var playbackSegments: [ReelSegment] {
@@ -2937,17 +3237,18 @@ private struct SegmentPageView: View {
 
 private struct FullScreenReelVideoPlayer: UIViewRepresentable {
     let player: AVPlayer
+    var videoGravity: AVLayerVideoGravity = .resizeAspectFill
 
     func makeUIView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
         view.playerLayer.player = self.player
-        view.playerLayer.videoGravity = .resizeAspectFill
+        view.playerLayer.videoGravity = self.videoGravity
         return view
     }
 
     func updateUIView(_ uiView: PlayerLayerView, context: Context) {
         uiView.playerLayer.player = self.player
-        uiView.playerLayer.videoGravity = .resizeAspectFill
+        uiView.playerLayer.videoGravity = self.videoGravity
     }
 }
 
@@ -3003,31 +3304,11 @@ private struct ReelOCRProcessor {
             let usableDuration = max(1, durationSeconds ?? assetDuration)
             let timestamps = self.timestamps(for: usableDuration)
 
-            let generator = AVAssetImageGenerator(asset: asset)
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 720, height: 1280)
-            generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
-            generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
-
-            var entries: [ReelOCREntry] = []
-            var previousText = ""
-
-            for timestamp in timestamps {
-                try Task.checkCancellation()
-                let image = try generator.copyCGImage(
-                    at: CMTime(seconds: Double(timestamp), preferredTimescale: 600),
-                    actualTime: nil
-                )
-                guard let entry = try self.recognizeText(in: image, timestamp: timestamp),
-                      !self.isNearDuplicate(entry.text, previousText: previousText) else {
-                    continue
-                }
-
-                previousText = entry.text
-                entries.append(entry)
+            do {
+                return try self.recognizeTextWithGenerator(asset: asset, timestamps: timestamps)
+            } catch {
+                return try await self.recognizeTextWithAssetReader(asset: asset, timestamps: timestamps)
             }
-
-            return entries
         }.value
     }
 
@@ -3056,6 +3337,111 @@ private struct ReelOCRProcessor {
         return (0..<self.maxFrames).map { index in
             Int(round(Double(duration) * Double(index) / Double(max(1, self.maxFrames - 1))))
         }
+    }
+
+    private func recognizeTextWithGenerator(asset: AVURLAsset, timestamps: [Int]) throws -> [ReelOCREntry] {
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 720, height: 1280)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.35, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.35, preferredTimescale: 600)
+
+        var entries: [ReelOCREntry] = []
+        var previousTextKey = ""
+
+        for timestamp in timestamps {
+            try Task.checkCancellation()
+            let image = try generator.copyCGImage(
+                at: CMTime(seconds: Double(timestamp), preferredTimescale: 600),
+                actualTime: nil
+            )
+            try self.appendRecognizedEntry(
+                from: image,
+                timestamp: timestamp,
+                entries: &entries,
+                previousTextKey: &previousTextKey
+            )
+        }
+
+        return entries
+    }
+
+    private func recognizeTextWithAssetReader(asset: AVURLAsset, timestamps: [Int]) async throws -> [ReelOCREntry] {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            return []
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]
+        )
+        output.alwaysCopiesSampleData = false
+
+        guard reader.canAdd(output) else { return [] }
+        reader.add(output)
+        guard reader.startReading() else {
+            if let error = reader.error { throw error }
+            return []
+        }
+
+        let targetTimestamps = Set(timestamps)
+        let imageContext = CIContext()
+        var processedTimestamps = Set<Int>()
+        var entries: [ReelOCREntry] = []
+        var previousTextKey = ""
+
+        while let sampleBuffer = output.copyNextSampleBuffer() {
+            try Task.checkCancellation()
+            let seconds = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+            guard seconds.isFinite else { continue }
+
+            let timestamp = Int(floor(seconds))
+            guard targetTimestamps.contains(timestamp), !processedTimestamps.contains(timestamp) else {
+                continue
+            }
+
+            processedTimestamps.insert(timestamp)
+            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { continue }
+
+            let image = CIImage(cvPixelBuffer: pixelBuffer)
+            guard let cgImage = imageContext.createCGImage(image, from: image.extent) else { continue }
+            try self.appendRecognizedEntry(
+                from: cgImage,
+                timestamp: timestamp,
+                entries: &entries,
+                previousTextKey: &previousTextKey
+            )
+
+            if processedTimestamps.count >= targetTimestamps.count {
+                break
+            }
+        }
+
+        if reader.status == .failed, let error = reader.error {
+            throw error
+        }
+
+        return entries
+    }
+
+    private func appendRecognizedEntry(
+        from image: CGImage,
+        timestamp: Int,
+        entries: inout [ReelOCREntry],
+        previousTextKey: inout String
+    ) throws {
+        guard let entry = try self.recognizeText(in: image, timestamp: timestamp) else {
+            return
+        }
+
+        let textKey = self.normalizedOCRKey(entry.text)
+        guard textKey != previousTextKey else { return }
+
+        previousTextKey = textKey
+        entries.append(entry)
     }
 
     private func recognizeText(in image: CGImage, timestamp: Int) throws -> ReelOCREntry? {
@@ -3106,13 +3492,11 @@ private struct ReelOCRProcessor {
         return output
     }
 
-    private func isNearDuplicate(_ text: String, previousText: String) -> Bool {
-        guard !previousText.isEmpty else { return false }
-        let current = Set(text.lowercased().split { !$0.isLetter && !$0.isNumber })
-        let previous = Set(previousText.lowercased().split { !$0.isLetter && !$0.isNumber })
-        guard !current.isEmpty else { return true }
-        let overlap = current.intersection(previous).count
-        return Double(overlap) / Double(current.count) > 0.86
+    private func normalizedOCRKey(_ text: String) -> String {
+        text
+            .lowercased()
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
