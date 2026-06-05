@@ -1840,6 +1840,7 @@ private struct ReelSummaryView: View {
                     currentSeconds: self.playback.currentSeconds,
                     durationSeconds: self.playback.durationSeconds ?? Double(self.reel.durationSeconds ?? 0),
                     isPlaying: self.playback.isPlaying,
+                    expandProgress: self.expandDragProgress,
                     onSeek: { self.playback.seek(to: $0) },
                     onTogglePlayPause: { self.playback.togglePlayPause() },
                     onOpenFullscreen: { self.openFullscreenVideo() }
@@ -2040,6 +2041,7 @@ private struct ReelSummaryHero: View {
     let currentSeconds: Double
     let durationSeconds: Double
     let isPlaying: Bool
+    let expandProgress: CGFloat
     let onSeek: (Double) -> Void
     let onTogglePlayPause: () -> Void
     let onOpenFullscreen: () -> Void
@@ -2051,21 +2053,29 @@ private struct ReelSummaryHero: View {
     var body: some View {
         ZStack {
             Button(action: self.showControlsTemporarily) {
-                ZStack {
-                    Color.black
+                GeometryReader { proxy in
+                    ZStack {
+                        Color.black
 
-                    if let player {
-                        FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspect)
+                        if let player {
+                            FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspectFill)
+                                .frame(width: self.videoFrameWidth(in: proxy.size), height: proxy.size.height)
+                                .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            AsyncImage(url: self.reel.thumbnailURL) { image in
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } placeholder: {
+                                ReelThumbnailPlaceholder()
+                            }
+                            .frame(width: self.videoFrameWidth(in: proxy.size), height: proxy.size.height)
+                            .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        AsyncImage(url: self.reel.thumbnailURL) { image in
-                            image
-                                .resizable()
-                                .scaledToFit()
-                        } placeholder: {
-                            ReelThumbnailPlaceholder()
                         }
                     }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -2076,6 +2086,7 @@ private struct ReelSummaryHero: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
+            .opacity(1 - min(self.expandProgress, 0.9))
 
             VStack {
                 Spacer()
@@ -2140,8 +2151,9 @@ private struct ReelSummaryHero: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 14)
             }
+            .opacity(1 - self.expandProgress)
         }
-        .frame(height: 372)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 0))
         .contentShape(Rectangle())
         .onTapGesture {
@@ -2166,6 +2178,15 @@ private struct ReelSummaryHero: View {
 
     private var displaySeconds: Double {
         self.isScrubbing ? self.scrubSeconds : self.currentSeconds
+    }
+
+    private func videoFrameWidth(in size: CGSize) -> CGFloat {
+        let pinnedWidth = min(size.width, size.height * 9 / 16)
+        return pinnedWidth + ((size.width - pinnedWidth) * self.expandProgress)
+    }
+
+    private var videoCornerRadius: CGFloat {
+        18 * (1 - self.expandProgress)
     }
 
     private func showControls() {
@@ -2762,21 +2783,25 @@ private struct ReelFullscreenVideoView: View {
             Color.black
                 .ignoresSafeArea()
 
-            if let player {
+            GeometryReader { proxy in
                 Button(action: self.showControlsTemporarily) {
-                    FullScreenReelVideoPlayer(player: player)
-                        .ignoresSafeArea()
+                    ZStack {
+                        Color.black
+
+                        if let player {
+                            FullScreenReelVideoPlayer(player: player)
+                        }
+                    }
+                    .frame(
+                        width: self.videoFrameWidth(containerWidth: proxy.size.width),
+                        height: proxy.size.height
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .buttonStyle(.plain)
-                .ignoresSafeArea()
-            } else {
-                Button(action: self.showControlsTemporarily) {
-                    Color.black
-                        .ignoresSafeArea()
-                }
-                .buttonStyle(.plain)
-                .ignoresSafeArea()
             }
+            .ignoresSafeArea()
 
             LinearGradient(
                 colors: [.black.opacity(0.5), .clear, .black.opacity(0.72)],
@@ -2784,6 +2809,7 @@ private struct ReelFullscreenVideoView: View {
                 endPoint: .bottom
             )
             .ignoresSafeArea()
+            .opacity(1 - self.collapseProgress)
 
             VStack {
                 HStack {
@@ -2803,6 +2829,7 @@ private struct ReelFullscreenVideoView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, UIApplication.shared.reelplayTopSafeArea + 8)
+                .opacity(1 - self.collapseProgress)
 
                 Spacer()
 
@@ -2850,6 +2877,7 @@ private struct ReelFullscreenVideoView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, max(24, UIApplication.shared.reelplayTopSafeArea == 0 ? 24 : 34))
+                .opacity(1 - self.collapseProgress)
             }
         }
         .frame(maxWidth: .infinity)
@@ -2891,6 +2919,15 @@ private struct ReelFullscreenVideoView: View {
     private var collapseHeight: CGFloat {
         let screenHeight = UIScreen.main.bounds.height
         return screenHeight - ((screenHeight - self.pinnedHeight) * self.collapseProgress)
+    }
+
+    private func videoFrameWidth(containerWidth: CGFloat) -> CGFloat {
+        let pinnedReelWidth = min(containerWidth, self.pinnedHeight * 9 / 16)
+        return containerWidth - ((containerWidth - pinnedReelWidth) * self.collapseProgress)
+    }
+
+    private var videoCornerRadius: CGFloat {
+        18 * self.collapseProgress
     }
 
     private var collapseCornerRadius: CGFloat {
