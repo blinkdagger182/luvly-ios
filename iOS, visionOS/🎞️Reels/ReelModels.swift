@@ -10,6 +10,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
     let thumbnailURL: URL?
     let durationSeconds: Int?
     let videoURL: URL?
+    let mediaItems: [ReelMediaItem]?
     let title: String?
     let category: String?
     let summary: String?
@@ -29,6 +30,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case thumbnailURL = "thumbnail_url"
         case durationSeconds = "duration_seconds"
         case videoURL = "video_url"
+        case mediaItems = "media_items"
         case title
         case category
         case summary
@@ -37,6 +39,22 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case createdAt = "created_at"
         case segments = "reel_segments"
         case ocrEntries = "reel_ocr_entries"
+    }
+}
+
+struct ReelMediaItem: Codable, Hashable {
+    let type: String
+    let url: URL
+    let thumbnailURL: URL?
+    let durationSeconds: Int?
+    let orderIndex: Int
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case url
+        case thumbnailURL = "thumbnail_url"
+        case durationSeconds = "duration_seconds"
+        case orderIndex = "order_index"
     }
 }
 

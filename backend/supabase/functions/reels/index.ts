@@ -11,9 +11,19 @@ type Segment = {
 
 type NormalizedReel = Record<string, unknown> & {
   duration_seconds?: number | null;
+  video_url?: string | null;
+  media_items?: MediaItem[];
   transcript?: unknown;
   caption?: string | null;
   ocr_entries?: OCREntry[];
+};
+
+type MediaItem = {
+  type: "image" | "video";
+  url: string;
+  thumbnail_url?: string | null;
+  duration_seconds?: number | null;
+  order_index: number;
 };
 
 type ReelSummary = {
@@ -46,6 +56,8 @@ const serviceRoleKey = requiredEnv("SERVICE_ROLE_KEY");
 const apifyToken = requiredEnv("APIFY_TOKEN");
 const openAIKey = requiredEnv("OPENAI_API_KEY");
 const apifyActorId = Deno.env.get("APIFY_INSTAGRAM_REEL_ACTOR_ID") ?? "xMc5Ga1oCONPmWJIa";
+const apifyTikTokActorId = Deno.env.get("APIFY_TIKTOK_ACTOR_ID") ?? "clockworks/tiktok-scraper";
+const apifyInstagramPostActorId = Deno.env.get("APIFY_INSTAGRAM_POST_ACTOR_ID") ?? "apify/instagram-scraper";
 const openAIModel = Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
 
 const supabase = createClient(supabaseUrl, serviceRoleKey);
@@ -169,7 +181,7 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
   await supabase.from("reel_segments").delete().eq("reel_id", id);
 
   if (segments.length > 0) {
-    const { error: segmentError } = await supabase.from("reel_segments").insert(
+    const { error: segmentError } = await supabase.from("reel_segments").upsert(
       segments.map((segment, index) => ({
         reel_id: id,
         start_seconds: segment.start_seconds,
@@ -180,6 +192,7 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
         tags: segment.tags,
         order_index: index,
       })),
+      { onConflict: "reel_id,order_index" },
     );
     if (segmentError) throw segmentError;
   }
@@ -212,11 +225,12 @@ async function importReel(sourceUrl: string) {
   if (createError) throw createError;
 
   try {
-    const apifyItem = await runApify(sourceUrl);
+    const source = detectSource(sourceUrl);
+    const apifyItem = await runApify(sourceUrl, source);
     const normalized = await normalizeApifyItem(sourceUrl, apifyItem);
     const summary = await summarizeReel(normalized);
 
-    const needsVisualOCR = typeof normalized.video_url === "string" && normalized.video_url.length > 0;
+    const needsVisualOCR = hasVideoURL(normalized);
     const { data: reel, error: updateError } = await supabase
       .from("reels")
       .update({
@@ -248,7 +262,9 @@ async function importReel(sourceUrl: string) {
     }));
 
     if (segmentRows.length > 0) {
-      const { error: segmentError } = await supabase.from("reel_segments").insert(segmentRows);
+      const { error: segmentError } = await supabase
+        .from("reel_segments")
+        .upsert(segmentRows, { onConflict: "reel_id,order_index" });
       if (segmentError) throw segmentError;
     }
 
@@ -265,17 +281,11 @@ async function importReel(sourceUrl: string) {
   }
 }
 
-async function runApify(sourceUrl: string) {
-  const input = {
-    username: [sourceUrl],
-    resultsLimit: 1,
-    skipPinnedPosts: false,
-    includeSharesCount: false,
-    includeTranscript: false,
-    includeDownloadedVideo: false,
-  };
+async function runApify(sourceUrl: string, source = detectSource(sourceUrl)) {
+  const actor = actorForSource(sourceUrl, source);
+  const input = apifyInputForSource(sourceUrl, source);
 
-  const runResponse = await fetch(`https://api.apify.com/v2/acts/${apifyActorId}/runs?token=${apifyToken}`, {
+  const runResponse = await fetch(`https://api.apify.com/v2/acts/${encodeURIComponent(actor)}/runs?token=${apifyToken}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
@@ -322,23 +332,70 @@ async function runApify(sourceUrl: string) {
   return items[0];
 }
 
+function actorForSource(sourceUrl: string, source: string) {
+  if (source === "tiktok") return apifyTikTokActorId;
+  if (isInstagramPostURL(sourceUrl)) return apifyInstagramPostActorId;
+  return apifyActorId;
+}
+
+function apifyInputForSource(sourceUrl: string, source: string) {
+  if (source === "tiktok") {
+    return {
+      postURLs: [sourceUrl],
+      startUrls: [sourceUrl],
+      resultsPerPage: 1,
+      maxItems: 1,
+      shouldDownloadVideos: false,
+      shouldDownloadCovers: false,
+      shouldDownloadSlideshowImages: false,
+      proxyConfiguration: { useApifyProxy: true },
+    };
+  }
+
+  return {
+    username: [sourceUrl],
+    directUrls: [sourceUrl],
+    startUrls: [sourceUrl],
+    resultsLimit: 1,
+    resultsType: "posts",
+    skipPinnedPosts: false,
+    includeSharesCount: false,
+    includeTranscript: false,
+    includeDownloadedVideo: false,
+  };
+}
+
 async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknown>): Promise<NormalizedReel> {
+  const source = detectSource(sourceUrl);
   let transcript = extractTranscript(item);
-  if (!hasTimestampedTranscript(transcript)) {
+  const mediaItems = extractMediaItems(item);
+  const videoUrl = extractVideoUrl(item, mediaItems);
+  const shouldTranscribeAudio = typeof videoUrl === "string" && videoUrl.length > 0;
+  if (shouldTranscribeAudio && !hasTimestampedTranscript(transcript)) {
     transcript = await transcribeAudioWithTimestamps(item) ?? transcript;
   }
   const owner = objectValue(item.owner);
+  const author = objectValue(item.authorMeta) ?? objectValue(item.author);
+  const caption = stringValue(item.caption) ?? stringValue(item.text) ?? stringValue(item.description);
+  const duration = numberValue(item.videoDuration) ??
+    numberValue(item.duration) ??
+    numberValue(item.durationSeconds) ??
+    numberValue(objectValue(item.videoMeta)?.duration) ??
+    slideshowDuration(mediaItems);
+  const ocrEntries = mediaItems.length > 0 && !videoUrl ? mediaItemsToOCREntries(mediaItems, caption) : undefined;
 
   return {
-    source: detectSource(sourceUrl),
+    source,
     source_url: sourceUrl,
-    source_id: stringValue(item.id) ?? stringValue(item.shortCode) ?? stringValue(item.shortcode),
-    creator_username: stringValue(item.ownerUsername) ?? stringValue(item.username) ?? stringValue(owner?.username),
-    creator_display_name: stringValue(item.ownerFullName) ?? stringValue(item.fullName) ?? stringValue(owner?.fullName),
-    caption: stringValue(item.caption) ?? stringValue(item.text) ?? stringValue(item.description),
-    thumbnail_url: stringValue(item.displayUrl) ?? stringValue(item.thumbnailUrl) ?? stringValue(item.thumbnail),
-    duration_seconds: numberValue(item.videoDuration) ?? numberValue(item.duration) ?? numberValue(item.durationSeconds),
-    video_url: stringValue(item.videoUrl) ?? stringValue(item.video_url) ?? stringValue(item.downloadedVideoUrl),
+    source_id: stringValue(item.id) ?? stringValue(item.shortCode) ?? stringValue(item.shortcode) ?? stringValue(item.awemeId),
+    creator_username: stringValue(item.ownerUsername) ?? stringValue(item.username) ?? stringValue(owner?.username) ?? stringValue(author?.name) ?? stringValue(author?.uniqueId),
+    creator_display_name: stringValue(item.ownerFullName) ?? stringValue(item.fullName) ?? stringValue(owner?.fullName) ?? stringValue(author?.nickName) ?? stringValue(author?.nickname),
+    caption,
+    thumbnail_url: extractThumbnailUrl(item, mediaItems),
+    duration_seconds: duration,
+    video_url: videoUrl,
+    media_items: mediaItems,
+    ocr_entries: ocrEntries,
     transcript,
   };
 }
@@ -353,6 +410,8 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "Use snake_case keys exactly. Segments must use integer seconds and should cover the reel in order.",
       "When timestamped transcript items are provided, choose segment boundaries from those timestamps.",
       "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context.",
+      "When media_items are provided without video_url, treat the content as an image slideshow.",
+      "For image slideshows, use the synthetic timestamps and any per-slide visual text to create replayable slide segments.",
       "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
       "If on-screen text changes over time, each meaningful text change should usually become its own segment.",
       "For workout/list reels, split visible exercise or step lines into separate replayable segments when possible.",
@@ -436,6 +495,10 @@ function normalizeSegment(rawSegment: unknown, index: number, duration: number):
 
 function fallbackSegments(input: NormalizedReel): Segment[] {
   const duration = clampInt(input.duration_seconds, 60);
+  if (Array.isArray(input.media_items) && input.media_items.length > 0 && !hasVideoURL(input)) {
+    return fallbackMediaItemSegments(input.media_items, input.caption ?? undefined);
+  }
+
   if (hasOCREntries(input.ocr_entries)) {
     return fallbackOCRSegments(input.ocr_entries, duration);
   }
@@ -461,6 +524,27 @@ function fallbackSegments(input: NormalizedReel): Segment[] {
       description: text,
       raw_text: text,
       tags: [],
+    };
+  });
+}
+
+function fallbackMediaItemSegments(mediaItems: MediaItem[], caption?: string): Segment[] {
+  const items = mediaItems
+    .filter((item) => item.url.length > 0)
+    .sort((a, b) => a.order_index - b.order_index);
+  const slideDuration = 3;
+  const captionLines = splitCaptionLines(caption);
+
+  return items.map((item, index) => {
+    const text = captionLines[index] ?? captionLines[0] ?? `Slide ${index + 1}`;
+    const start = index * slideDuration;
+    return {
+      start_seconds: start,
+      end_seconds: start + slideDuration,
+      title: titleFromText(text),
+      description: text,
+      raw_text: text,
+      tags: [item.type, "slideshow"],
     };
   });
 }
@@ -536,6 +620,153 @@ function fallbackTimestampedSegments(transcript: TranscriptSegment[]): Segment[]
       tags: [],
     };
   });
+}
+
+function extractVideoUrl(item: Record<string, unknown>, mediaItems: MediaItem[]) {
+  const videoMeta = objectValue(item.videoMeta);
+  const urls = [
+    item.videoUrl,
+    item.video_url,
+    item.downloadedVideoUrl,
+    item.webVideoUrl,
+    item.video,
+    videoMeta?.downloadAddr,
+    videoMeta?.playAddr,
+    videoMeta?.url,
+    ...mediaItems.filter((mediaItem) => mediaItem.type === "video").map((mediaItem) => mediaItem.url),
+  ];
+
+  return urls.map(stringValue).find((url) => !!url) ?? null;
+}
+
+function extractThumbnailUrl(item: Record<string, unknown>, mediaItems: MediaItem[]) {
+  const videoMeta = objectValue(item.videoMeta);
+  const urls = [
+    item.displayUrl,
+    item.thumbnailUrl,
+    item.thumbnail,
+    item.coverUrl,
+    item.coversDefault,
+    item.coversOrigin,
+    item.coversDynamic,
+    videoMeta?.coverUrl,
+    videoMeta?.cover,
+    mediaItems[0]?.thumbnail_url,
+    mediaItems[0]?.url,
+  ];
+
+  return urls.map(stringValue).find((url) => !!url) ?? null;
+}
+
+function extractMediaItems(item: Record<string, unknown>): MediaItem[] {
+  const mediaItems: MediaItem[] = [];
+  appendMediaItems(mediaItems, item.media_items);
+  appendMediaItems(mediaItems, item.mediaItems);
+  appendMediaItems(mediaItems, item.images);
+  appendMediaItems(mediaItems, item.imageUrls);
+  appendMediaItems(mediaItems, item.image_urls);
+  appendMediaItems(mediaItems, item.slideshowImageLinks);
+  appendMediaItems(mediaItems, item.slideshowImages);
+  appendMediaItems(mediaItems, item.carouselMedia);
+  appendMediaItems(mediaItems, item.carousel_media);
+  appendMediaItems(mediaItems, item.childPosts);
+  appendMediaItems(mediaItems, item.children);
+
+  const imagePostUrl = stringValue(item.displayUrl) ?? stringValue(item.imageUrl) ?? stringValue(item.image_url);
+  const hasVideo = !!(stringValue(item.videoUrl) ?? stringValue(item.video_url) ?? stringValue(item.webVideoUrl));
+  if (imagePostUrl && !hasVideo) {
+    mediaItems.push({
+      type: "image",
+      url: imagePostUrl,
+      thumbnail_url: imagePostUrl,
+      order_index: mediaItems.length,
+    });
+  }
+
+  return dedupeMediaItems(mediaItems);
+}
+
+function appendMediaItems(output: MediaItem[], value: unknown) {
+  if (!Array.isArray(value)) return;
+
+  for (const rawItem of value) {
+    const index = output.length;
+    if (typeof rawItem === "string" && rawItem.length > 0) {
+      output.push({ type: inferMediaType(rawItem), url: rawItem, thumbnail_url: rawItem, order_index: index });
+      continue;
+    }
+
+    const item = objectValue(rawItem);
+    if (!item) continue;
+    const videoMeta = objectValue(item.videoMeta);
+    const url = stringValue(item.url) ??
+      stringValue(item.src) ??
+      stringValue(item.displayUrl) ??
+      stringValue(item.imageUrl) ??
+      stringValue(item.image_url) ??
+      stringValue(item.videoUrl) ??
+      stringValue(item.video_url) ??
+      stringValue(videoMeta?.downloadAddr) ??
+      stringValue(videoMeta?.playAddr);
+    if (!url) continue;
+
+    const thumbnail = stringValue(item.thumbnailUrl) ??
+      stringValue(item.thumbnail) ??
+      stringValue(item.displayUrl) ??
+      stringValue(item.coverUrl) ??
+      stringValue(videoMeta?.coverUrl) ??
+      (inferMediaType(url) === "image" ? url : null);
+    const explicitType = stringValue(item.type) ?? stringValue(item.mediaType) ?? stringValue(item.media_type);
+    output.push({
+      type: explicitType?.toLowerCase().includes("video") ? "video" : inferMediaType(url),
+      url,
+      thumbnail_url: thumbnail,
+      duration_seconds: numberValue(item.duration) ?? numberValue(item.durationSeconds) ?? numberValue(videoMeta?.duration),
+      order_index: numberValue(item.orderIndex) ?? numberValue(item.order_index) ?? index,
+    });
+  }
+}
+
+function dedupeMediaItems(items: MediaItem[]) {
+  const seen = new Set<string>();
+  return items
+    .filter((item) => {
+      if (seen.has(item.url)) return false;
+      seen.add(item.url);
+      return true;
+    })
+    .map((item, index) => ({ ...item, order_index: index }));
+}
+
+function inferMediaType(url: string): "image" | "video" {
+  return /\.(mp4|mov|m3u8|webm)(?:[?#].*)?$/i.test(url) ? "video" : "image";
+}
+
+function slideshowDuration(mediaItems: MediaItem[]) {
+  if (mediaItems.length === 0) return null;
+  return mediaItems.reduce((total, item) => total + (item.duration_seconds ?? 3), 0);
+}
+
+function mediaItemsToOCREntries(mediaItems: MediaItem[], caption?: string | null): OCREntry[] {
+  const captionLines = splitCaptionLines(caption ?? undefined);
+  return mediaItems.map((item, index) => ({
+    timestamp_seconds: index * 3,
+    text: captionLines[index] ?? captionLines[0] ?? `Slide ${index + 1}`,
+    confidence: null,
+  }));
+}
+
+function splitCaptionLines(caption?: string): string[] {
+  if (!caption) return [];
+  return caption
+    .split(/\n+|(?:\s*[•·]\s*)|(?:\s+-\s+)/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 12);
+}
+
+function hasVideoURL(input: NormalizedReel) {
+  return typeof input.video_url === "string" && input.video_url.length > 0;
 }
 
 function transcriptText(transcript: unknown): string {
@@ -642,7 +873,7 @@ function normalizeOCRText(text: string): string {
 }
 
 async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Promise<TranscriptSegment[] | null> {
-  const audioUrl = stringValue(item.audioUrl) ?? stringValue(item.videoUrl) ?? stringValue(item.video_url);
+  const audioUrl = stringValue(item.audioUrl) ?? extractVideoUrl(item, extractMediaItems(item));
   if (!audioUrl) return null;
 
   const audioResponse = await fetch(audioUrl);
@@ -706,10 +937,19 @@ function detectSource(sourceUrl: string) {
 function normalizeReelUrl(value: unknown) {
   if (typeof value !== "string") throw new Error("Missing url");
   const url = new URL(value.trim());
-  if (!["instagram.com", "www.instagram.com", "tiktok.com", "www.tiktok.com", "vm.tiktok.com"].includes(url.hostname)) {
+  if (!["instagram.com", "www.instagram.com", "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com"].includes(url.hostname)) {
     throw new Error("Only Instagram and TikTok URLs are supported");
   }
   return url.toString();
+}
+
+function isInstagramPostURL(sourceUrl: string) {
+  try {
+    const url = new URL(sourceUrl);
+    return url.hostname.includes("instagram.com") && /^\/p\//.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 
 function stringValue(value: unknown): string | null {

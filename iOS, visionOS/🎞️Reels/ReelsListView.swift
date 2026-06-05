@@ -22,9 +22,11 @@ struct ReelplayRootView: View {
     @State private var isImporting = false
     @State private var isProcessingPendingOCR = false
     @State private var importStageIndex = 0
+    @State private var importElapsedSeconds = 0
     @State private var importingURL: URL?
     @State private var isPreparingSelectedReel = false
     @State private var selectedReelStageIndex = 0
+    @State private var selectedReelElapsedSeconds = 0
     @State private var preparingReelTitle: String?
     @State private var errorMessage: String?
 
@@ -63,7 +65,13 @@ struct ReelplayRootView: View {
                         footer: "You will be notified when it is ready.",
                         sourceURL: self.importingURL,
                         stages: self.importStages,
-                        activeStageIndex: self.importStageIndex
+                        activeStageIndex: self.importStageIndex,
+                        progress: self.progress(
+                            activeStageIndex: self.importStageIndex,
+                            stageCount: self.importStages.count,
+                            elapsedSeconds: self.importElapsedSeconds
+                        ),
+                        encouragement: self.encouragement(for: self.importElapsedSeconds)
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
@@ -76,7 +84,13 @@ struct ReelplayRootView: View {
                         footer: "Opening as soon as it is ready.",
                         sourceURL: nil,
                         stages: self.selectedReelStages,
-                        activeStageIndex: self.selectedReelStageIndex
+                        activeStageIndex: self.selectedReelStageIndex,
+                        progress: self.progress(
+                            activeStageIndex: self.selectedReelStageIndex,
+                            stageCount: self.selectedReelStages.count,
+                            elapsedSeconds: self.selectedReelElapsedSeconds
+                        ),
+                        encouragement: self.encouragement(for: self.selectedReelElapsedSeconds)
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
@@ -186,6 +200,7 @@ struct ReelplayRootView: View {
             self.isImporting = true
             self.importingURL = url
             self.importStageIndex = 0
+            self.importElapsedSeconds = 0
 
             var reel = try await ReelService().importReel(url: url)
             self.reels.removeAll { $0.id == reel.id }
@@ -210,15 +225,19 @@ struct ReelplayRootView: View {
         }
 
         self.isImporting = false
+        self.importElapsedSeconds = 0
         self.importingURL = nil
     }
 
     private func animateImportStages() async {
         while !Task.isCancelled && self.isImporting {
-            try? await Task.sleep(for: .seconds(2.1))
+            try? await Task.sleep(for: .seconds(1))
             guard self.isImporting else { return }
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                self.importStageIndex = min(self.importStageIndex + 1, self.importStages.count - 1)
+            self.importElapsedSeconds += 1
+            if self.importElapsedSeconds.isMultiple(of: 2) {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    self.importStageIndex = min(self.importStageIndex + 1, self.importStages.count - 1)
+                }
             }
         }
     }
@@ -233,6 +252,7 @@ struct ReelplayRootView: View {
 
         self.preparingReelTitle = reel.title
         self.selectedReelStageIndex = 0
+        self.selectedReelElapsedSeconds = 0
         self.isPreparingSelectedReel = true
 
         Task {
@@ -242,6 +262,7 @@ struct ReelplayRootView: View {
             await MainActor.run {
                 self.selectedReel = preparedReel
                 self.isPreparingSelectedReel = false
+                self.selectedReelElapsedSeconds = 0
                 self.preparingReelTitle = nil
             }
         }
@@ -282,12 +303,36 @@ struct ReelplayRootView: View {
 
     private func animateSelectedReelStages() async {
         while !Task.isCancelled && self.isPreparingSelectedReel {
-            try? await Task.sleep(for: .seconds(1.6))
+            try? await Task.sleep(for: .seconds(1))
             guard self.isPreparingSelectedReel else { return }
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                self.selectedReelStageIndex = min(self.selectedReelStageIndex + 1, self.selectedReelStages.count - 1)
+            self.selectedReelElapsedSeconds += 1
+            if self.selectedReelElapsedSeconds.isMultiple(of: 2) {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    self.selectedReelStageIndex = min(self.selectedReelStageIndex + 1, self.selectedReelStages.count - 1)
+                }
             }
         }
+    }
+
+    private func progress(activeStageIndex: Int, stageCount: Int, elapsedSeconds: Int) -> Double {
+        guard stageCount > 0 else { return 0.08 }
+        let boundedStage = min(max(activeStageIndex, 0), stageCount - 1)
+        let stageWidth = 1.0 / Double(stageCount)
+        let stageProgress = (Double(boundedStage) * stageWidth) + (stageWidth * 0.56)
+        let elapsedNudge = min(0.16, Double(elapsedSeconds) / 120)
+        return min(0.96, max(0.08, stageProgress + elapsedNudge))
+    }
+
+    private func encouragement(for elapsedSeconds: Int) -> String? {
+        guard elapsedSeconds >= 5 else { return nil }
+        let messages = [
+            "Getting there. We are lining up the best moments.",
+            "Almost there. Tightening the timestamps now.",
+            "Still working. This reel has a little more to unpack.",
+            "Nearly ready. Building the replayable steps.",
+        ]
+        let index = min((elapsedSeconds - 5) / 5, messages.count - 1)
+        return messages[index]
     }
 
     private func processOCR(for reel: ReelItem) async -> ReelItem {
@@ -1152,7 +1197,7 @@ private struct ReelListRow: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                AsyncImage(url: self.reel.thumbnailURL) { image in
+                AsyncImage(url: self.reel.displayThumbnailURL) { image in
                     image
                         .resizable()
                         .scaledToFill()
@@ -1584,8 +1629,17 @@ private struct ImportReelOverlay: View {
     let sourceURL: URL?
     let stages: [String]
     let activeStageIndex: Int
-    @State private var spin = false
+    let progress: Double
+    let encouragement: String?
     @State private var pulse = false
+
+    private var clampedProgress: Double {
+        min(max(self.progress, 0.01), 0.99)
+    }
+
+    private var progressPercent: Int {
+        Int((self.clampedProgress * 100).rounded())
+    }
 
     var body: some View {
         ZStack {
@@ -1621,17 +1675,25 @@ private struct ImportReelOverlay: View {
                         .frame(width: 176, height: 176)
 
                     Circle()
-                        .trim(from: 0.02, to: 0.78)
+                        .trim(from: 0, to: self.clampedProgress)
                         .stroke(ReelplayTheme.black, style: StrokeStyle(lineWidth: 7, lineCap: .round))
                         .frame(width: 176, height: 176)
-                        .rotationEffect(.degrees(self.spin ? 360 : 0))
+                        .rotationEffect(.degrees(-90))
+                        .animation(.spring(response: 0.46, dampingFraction: 0.86), value: self.clampedProgress)
 
-                    ReelplayAppIconView()
-                        .frame(width: 92, height: 92)
-                        .scaleEffect(self.pulse ? 1.06 : 0.96)
+                    VStack(spacing: 7) {
+                        ReelplayAppIconView()
+                            .frame(width: 82, height: 82)
+                            .scaleEffect(self.pulse ? 1.05 : 0.97)
+
+                        Text("\(self.progressPercent)%")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                            .monospacedDigit()
+                    }
                 }
 
-                VStack(spacing: 8) {
+                VStack(spacing: 9) {
                     Text(self.headline)
                         .font(.headline.weight(.bold))
                         .foregroundStyle(ReelplayTheme.black)
@@ -1641,6 +1703,15 @@ private struct ImportReelOverlay: View {
                         .foregroundStyle(ReelplayTheme.mutedText)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 28)
+
+                    if let encouragement {
+                        Text(encouragement)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 28)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
 
                     if let sourceURL {
                         Text(sourceURL.host(percentEncoded: false) ?? sourceURL.absoluteString)
@@ -1694,9 +1765,6 @@ private struct ImportReelOverlay: View {
             }
         }
         .onAppear {
-            withAnimation(.linear(duration: 2.6).repeatForever(autoreverses: false)) {
-                self.spin = true
-            }
             withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
                 self.pulse = true
             }
@@ -1739,10 +1807,13 @@ private struct ReelSummaryView: View {
     @State private var focusedSegmentID: UUID?
     @State private var isShowingFullscreenVideo = false
     @State private var expandDragTranslation: CGFloat = 0
+    @State private var canExpandFromCurrentDrag = false
+    @State private var fullscreenCollapseProgress: CGFloat = 0
+    @State private var contentScrollOffsetY: CGFloat = 0
 
     init(reel: ReelItem) {
         self.reel = reel
-        self._playback = StateObject(wrappedValue: SegmentPlaybackController(videoURL: reel.videoURL))
+        self._playback = StateObject(wrappedValue: SegmentPlaybackController(videoURL: reel.videoURL, initialDurationSeconds: reel.durationSeconds))
     }
 
     private var segments: [ReelSegment] {
@@ -1763,6 +1834,15 @@ private struct ReelSummaryView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    GeometryReader { proxy in
+                        Color.clear
+                            .preference(
+                                key: ReelSummaryScrollOffsetPreferenceKey.self,
+                                value: proxy.frame(in: .named("ReelSummaryScroll")).minY
+                            )
+                    }
+                    .frame(height: 0)
+
                     HStack(alignment: .top, spacing: 12) {
                         VStack(alignment: .leading, spacing: 7) {
                             Text(self.reel.title ?? self.reel.caption ?? "Saved reel")
@@ -1804,6 +1884,7 @@ private struct ReelSummaryView: View {
                                     segment: segment,
                                     isFocused: self.focusedSegmentID == segment.id,
                                     isExpanded: self.expandedSegmentID == segment.id,
+                                    shouldLoadThumbnail: self.playback.canLoadSecondaryAssets,
                                     previousTitle: self.previousSegment(for: segment)?.title,
                                     nextTitle: self.nextSegment(for: segment)?.title,
                                     onPlaySegmentVideo: { self.openSegmentVideo(segment) },
@@ -1828,10 +1909,15 @@ private struct ReelSummaryView: View {
                         .padding(.horizontal, 20)
                     }
                 }
-                .padding(.top, self.heroHeight)
+                .padding(.top, self.attachedContentTopHeight)
                 .padding(.bottom, 30)
             }
+            .coordinateSpace(name: "ReelSummaryScroll")
             .scrollIndicators(.hidden)
+            .onPreferenceChange(ReelSummaryScrollOffsetPreferenceKey.self) { offset in
+                self.contentScrollOffsetY = offset
+            }
+            .simultaneousGesture(self.expandFromContentSwipe())
 
             VStack(spacing: 0) {
                 ReelSummaryHero(
@@ -1898,10 +1984,15 @@ private struct ReelSummaryView: View {
                     onDismiss: {
                         withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
                             self.isShowingFullscreenVideo = false
+                            self.fullscreenCollapseProgress = 0
                         }
+                    },
+                    onCollapseProgress: { progress in
+                        self.fullscreenCollapseProgress = progress
                     },
                     onCollapseToPinned: {
                         self.isShowingFullscreenVideo = false
+                        self.fullscreenCollapseProgress = 0
                     }
                 )
                 .zIndex(30)
@@ -1910,14 +2001,18 @@ private struct ReelSummaryView: View {
         .ignoresSafeArea(edges: .top)
         .background(Color(hex: 0x0F0F10))
         .onAppear {
-            self.playback.playNormally()
+            Task {
+                await self.playback.prepareAndPlayNormally()
+            }
         }
         .onChange(of: self.focusedSegmentID) { _, _ in
-            if let focusedSegmentID,
-               let focusedSegment = self.segments.first(where: { $0.id == focusedSegmentID }) {
-                self.playback.play(focusedSegment)
-            } else {
-                self.playback.playNormally()
+            Task {
+                if let focusedSegmentID,
+                   let focusedSegment = self.segments.first(where: { $0.id == focusedSegmentID }) {
+                    await self.playback.prepareAndPlay(focusedSegment)
+                } else {
+                    await self.playback.prepareAndPlayNormally()
+                }
             }
         }
         .onDisappear {
@@ -1935,17 +2030,32 @@ private struct ReelSummaryView: View {
         return self.heroHeight + (screenHeight - self.heroHeight) * self.expandDragProgress
     }
 
+    private var attachedContentTopHeight: CGFloat {
+        let screenHeight = UIScreen.main.bounds.height
+        if self.isShowingFullscreenVideo {
+            return screenHeight - ((screenHeight - self.heroHeight) * self.fullscreenCollapseProgress)
+        }
+
+        return self.interactiveHeroHeight
+    }
+
+    private var isContentScrolledToTop: Bool {
+        self.contentScrollOffsetY >= self.heroHeight - 8
+    }
+
     private func expandVideoSwipe() -> some Gesture {
         DragGesture(minimumDistance: 24)
             .onChanged { value in
                 let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
-                guard mostlyVertical else { return }
+                guard self.canStartOrContinueExpandDrag(value, mostlyVertical: mostlyVertical) else { return }
                 self.expandDragTranslation = max(0, value.translation.height)
             }
             .onEnded { value in
                 let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
                 let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
-                if movedDown, mostlyVertical {
+                let canComplete = self.canExpandFromCurrentDrag && movedDown && mostlyVertical
+                self.canExpandFromCurrentDrag = false
+                if canComplete {
                     self.completeDragToFullscreen()
                 } else {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
@@ -1953,6 +2063,50 @@ private struct ReelSummaryView: View {
                     }
                 }
             }
+    }
+
+    private func expandFromContentSwipe() -> some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onChanged { value in
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
+                guard self.canStartOrContinueExpandDrag(value, mostlyVertical: mostlyVertical) else { return }
+                self.expandDragTranslation = max(0, value.translation.height)
+            }
+            .onEnded { value in
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
+                let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
+                let canComplete = self.canExpandFromCurrentDrag && mostlyVertical
+                self.canExpandFromCurrentDrag = false
+                guard canComplete else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        self.expandDragTranslation = 0
+                    }
+                    return
+                }
+
+                if movedDown {
+                    self.completeDragToFullscreen()
+                } else {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        self.expandDragTranslation = 0
+                    }
+                }
+            }
+    }
+
+    private func canStartOrContinueExpandDrag(_ value: DragGesture.Value, mostlyVertical: Bool) -> Bool {
+        guard mostlyVertical, value.translation.height > 0 else {
+            if self.expandDragTranslation == 0 {
+                self.canExpandFromCurrentDrag = false
+            }
+            return false
+        }
+
+        if self.expandDragTranslation == 0 {
+            self.canExpandFromCurrentDrag = self.isContentScrolledToTop
+        }
+
+        return self.canExpandFromCurrentDrag
     }
 
     private func completeDragToFullscreen() {
@@ -2063,7 +2217,7 @@ private struct ReelSummaryHero: View {
                                 .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
-                            AsyncImage(url: self.reel.thumbnailURL) { image in
+                            AsyncImage(url: self.reel.displayThumbnailURL) { image in
                                 image
                                     .resizable()
                                     .scaledToFill()
@@ -2264,6 +2418,7 @@ private struct SegmentSummaryRow: View {
     let segment: ReelSegment
     let isFocused: Bool
     let isExpanded: Bool
+    let shouldLoadThumbnail: Bool
     let previousTitle: String?
     let nextTitle: String?
     let onPlaySegmentVideo: () -> Void
@@ -2276,7 +2431,11 @@ private struct SegmentSummaryRow: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Button(action: self.onPlaySegmentVideo) {
-                    SegmentThumbnail(reel: self.reel, segment: self.segment)
+                    SegmentThumbnail(
+                        reel: self.reel,
+                        segment: self.segment,
+                        shouldLoadThumbnail: self.shouldLoadThumbnail
+                    )
                 }
                 .buttonStyle(.plain)
 
@@ -2412,13 +2571,15 @@ private struct SegmentExpandedSummary: View {
 private struct SegmentThumbnail: View {
     let reel: ReelItem
     let segment: ReelSegment
+    let shouldLoadThumbnail: Bool
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
             SegmentFrameThumbnail(
                 videoURL: self.reel.videoURL,
-                fallbackURL: self.reel.thumbnailURL,
-                seconds: self.segment.startSeconds
+                fallbackURL: self.reel.displayThumbnailURL,
+                seconds: self.segment.startSeconds,
+                shouldLoad: self.shouldLoadThumbnail
             )
             .frame(width: 82, height: 64)
             .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -2439,6 +2600,7 @@ private struct SegmentFrameThumbnail: View {
     let videoURL: URL?
     let fallbackURL: URL?
     let seconds: Int
+    let shouldLoad: Bool
     @State private var image: UIImage?
     @State private var didFail = false
 
@@ -2448,6 +2610,8 @@ private struct SegmentFrameThumbnail: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+            } else if !self.shouldLoad {
+                SegmentDeferredThumbnailPlaceholder()
             } else if self.didFail {
                 AsyncImage(url: self.fallbackURL) { image in
                     image
@@ -2467,13 +2631,15 @@ private struct SegmentFrameThumbnail: View {
     }
 
     private var taskID: String {
-        "\(self.videoURL?.absoluteString ?? "missing")-\(self.seconds)"
+        "\(self.videoURL?.absoluteString ?? "missing")-\(self.seconds)-\(self.shouldLoad)"
     }
 
     @MainActor
     private func loadFrame() async {
         self.image = nil
         self.didFail = false
+
+        guard self.shouldLoad else { return }
 
         guard let videoURL else {
             self.didFail = true
@@ -2501,6 +2667,20 @@ private struct SegmentFrameThumbnail: View {
             let image = try generator.copyCGImage(at: time, actualTime: nil)
             return UIImage(cgImage: image)
         }.value
+    }
+}
+
+private struct SegmentDeferredThumbnailPlaceholder: View {
+    var body: some View {
+        ZStack {
+            Color(hex: 0x1C1C1E)
+
+            Image("AboutAppIcon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 24, height: 24)
+                .opacity(0.42)
+        }
     }
 }
 
@@ -2598,7 +2778,7 @@ private struct SegmentDetailView: View {
                         if let player = self.playback.player {
                             FullScreenReelVideoPlayer(player: player)
                         } else {
-                            AsyncImage(url: self.reel.thumbnailURL) { image in
+                            AsyncImage(url: self.reel.displayThumbnailURL) { image in
                                 image
                                     .resizable()
                                     .scaledToFill()
@@ -2771,6 +2951,7 @@ private struct ReelFullscreenVideoView: View {
     let onSeek: (Double) -> Void
     let onTogglePlayPause: () -> Void
     let onDismiss: () -> Void
+    let onCollapseProgress: (CGFloat) -> Void
     let onCollapseToPinned: () -> Void
     @State private var scrubSeconds: Double = 0
     @State private var isScrubbing = false
@@ -2888,7 +3069,11 @@ private struct ReelFullscreenVideoView: View {
         .opacity(self.collapseOpacity)
         .onAppear {
             self.scrubSeconds = self.currentSeconds
+            self.onCollapseProgress(0)
             self.showControlsTemporarily()
+        }
+        .onChange(of: self.collapseProgress) { _, progress in
+            self.onCollapseProgress(progress)
         }
         .onChange(of: self.currentSeconds) { _, seconds in
             guard !self.isScrubbing else { return }
@@ -2896,6 +3081,7 @@ private struct ReelFullscreenVideoView: View {
         }
         .onDisappear {
             self.hideControlsTask?.cancel()
+            self.onCollapseProgress(0)
         }
         .contentShape(Rectangle())
         .onTapGesture {
@@ -3119,6 +3305,13 @@ private struct SegmentReelPlayerView: View {
 }
 
 private extension ReelItem {
+    var displayThumbnailURL: URL? {
+        self.mediaItems?
+            .sorted { $0.orderIndex < $1.orderIndex }
+            .compactMap { $0.thumbnailURL ?? ($0.type == "image" ? $0.url : nil) }
+            .first ?? self.thumbnailURL
+    }
+
     var isMicroreelReady: Bool {
         return self.segments.count >= 2
     }
@@ -3155,6 +3348,14 @@ private extension ReelItem {
     }
 }
 
+private struct ReelSummaryScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private extension UIApplication {
     var reelplayTopSafeArea: CGFloat {
         self.connectedScenes
@@ -3181,7 +3382,7 @@ private struct SegmentPageView: View {
                 FullScreenReelVideoPlayer(player: player)
                     .ignoresSafeArea()
             } else {
-                AsyncImage(url: self.reel.thumbnailURL) { image in
+                AsyncImage(url: self.reel.displayThumbnailURL) { image in
                     image
                         .resizable()
                         .scaledToFill()
@@ -3545,13 +3746,25 @@ private final class SegmentPlaybackController: ObservableObject {
     @Published var currentSeconds: Double = 0
     @Published var durationSeconds: Double?
     @Published var isPlaying = false
+    @Published var isPreparing = false
+    @Published var isReadyForDisplay = false
+    @Published var canLoadSecondaryAssets = false
+    private var playbackGeneration = 0
 
-    init(videoURL: URL?) {
+    init(videoURL: URL?, initialDurationSeconds: Int? = nil) {
+        if let initialDurationSeconds, initialDurationSeconds > 0 {
+            self.durationSeconds = Double(initialDurationSeconds)
+        }
+
         if let videoURL {
             self.player = AVPlayer(url: videoURL)
+            self.player?.automaticallyWaitsToMinimizeStalling = false
+            self.player?.currentItem?.preferredForwardBufferDuration = 0.4
             self.configureProgressObserver()
         } else {
             self.player = nil
+            self.isReadyForDisplay = true
+            self.canLoadSecondaryAssets = true
         }
     }
 
@@ -3569,9 +3782,12 @@ private final class SegmentPlaybackController: ObservableObject {
         self.removeTimeObserver()
 
         let start = CMTime(seconds: Double(segment.startSeconds), preferredTimescale: 600)
+        self.currentSeconds = Double(segment.startSeconds)
         player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero)
-        player.play()
+        player.playImmediately(atRate: 1)
         self.isPlaying = true
+        self.isReadyForDisplay = true
+        self.unlockSecondaryAssetsAfterMainPlayback()
 
         self.timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.08, preferredTimescale: 600),
@@ -3590,15 +3806,77 @@ private final class SegmentPlaybackController: ObservableObject {
     func playNormally() {
         guard let player else { return }
         self.removeTimeObserver()
-        player.play()
+        self.currentSeconds = player.currentTime().seconds.isFinite ? player.currentTime().seconds : self.currentSeconds
+        player.playImmediately(atRate: 1)
         self.isPlaying = true
+        self.isReadyForDisplay = true
+        self.unlockSecondaryAssetsAfterMainPlayback()
+    }
+
+    func prepareAndPlay(_ segment: ReelSegment) async {
+        guard let player else { return }
+        self.playbackGeneration += 1
+        let generation = self.playbackGeneration
+        self.removeTimeObserver()
+
+        let startSeconds = Double(segment.startSeconds)
+        self.currentSeconds = startSeconds
+        await self.preparePlayer(at: startSeconds, generation: generation)
+        guard generation == self.playbackGeneration else { return }
+
+        player.playImmediately(atRate: 1)
+        self.isPlaying = true
+
+        self.timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.08, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            guard time.seconds >= Double(segment.endSeconds) else { return }
+            Task { @MainActor [weak self] in
+                self?.currentSeconds = Double(segment.startSeconds)
+                self?.player?.seek(
+                    to: CMTime(seconds: Double(segment.startSeconds), preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+                self?.player?.playImmediately(atRate: 1)
+            }
+        }
+    }
+
+    func prepareAndPlayNormally() async {
+        guard let player else { return }
+        self.playbackGeneration += 1
+        let generation = self.playbackGeneration
+        self.removeTimeObserver()
+
+        let currentTime = player.currentTime().seconds
+        let startSeconds = currentTime.isFinite ? currentTime : self.currentSeconds
+        self.currentSeconds = max(0, startSeconds)
+
+        if startSeconds <= 0.05 {
+            self.isPreparing = false
+            self.isReadyForDisplay = true
+            player.playImmediately(atRate: 1)
+            self.isPlaying = true
+            self.unlockSecondaryAssetsAfterMainPlayback()
+            self.loadDurationInBackground()
+            return
+        }
+
+        await self.preparePlayer(at: max(0, startSeconds), generation: generation)
+        guard generation == self.playbackGeneration else { return }
+
+        player.playImmediately(atRate: 1)
+        self.isPlaying = true
+        self.unlockSecondaryAssetsAfterMainPlayback()
     }
 
     func seek(to seconds: Double) {
         guard let player else { return }
         let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
-        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
         self.currentSeconds = seconds
+        player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     func togglePlayPause() {
@@ -3627,19 +3905,6 @@ private final class SegmentPlaybackController: ObservableObject {
     private func configureProgressObserver() {
         guard let player else { return }
 
-        Task { [weak self, weak player] in
-            guard let self,
-                  let asset = player?.currentItem?.asset else {
-                return
-            }
-            let duration = try? await asset.load(.duration)
-            await MainActor.run {
-                if let seconds = duration?.seconds, seconds.isFinite, seconds > 0 {
-                    self.durationSeconds = seconds
-                }
-            }
-        }
-
         self.progressObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.12, preferredTimescale: 600),
             queue: .main
@@ -3647,6 +3912,58 @@ private final class SegmentPlaybackController: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.currentSeconds = time.seconds.isFinite ? time.seconds : 0
                 self?.isPlaying = (self?.player?.rate ?? 0) != 0
+            }
+        }
+    }
+
+    private func preparePlayer(at seconds: Double, generation: Int) async {
+        guard let player,
+              let item = player.currentItem else {
+            return
+        }
+
+        self.isPreparing = true
+        self.isReadyForDisplay = false
+        item.preferredForwardBufferDuration = 0.4
+
+        self.currentSeconds = seconds
+        await self.seekPlayer(to: seconds)
+        guard generation == self.playbackGeneration else { return }
+        self.currentSeconds = seconds
+        self.isPreparing = false
+        self.isReadyForDisplay = true
+        self.unlockSecondaryAssetsAfterMainPlayback()
+
+        self.loadDurationInBackground()
+    }
+
+    private func unlockSecondaryAssetsAfterMainPlayback() {
+        guard !self.canLoadSecondaryAssets else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            self?.canLoadSecondaryAssets = true
+        }
+    }
+
+    private func loadDurationInBackground() {
+        guard let item = self.player?.currentItem else { return }
+        Task { [weak self, weak item] in
+            guard let self, let item else { return }
+            let duration = try? await item.asset.load(.duration)
+            await MainActor.run {
+                if let seconds = duration?.seconds, seconds.isFinite, seconds > 0 {
+                    self.durationSeconds = seconds
+                }
+            }
+        }
+    }
+
+    private func seekPlayer(to seconds: Double) async {
+        guard let player else { return }
+        let seekTime = CMTime(seconds: seconds, preferredTimescale: 600)
+        await withCheckedContinuation { continuation in
+            player.seek(to: seekTime, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+                continuation.resume()
             }
         }
     }
