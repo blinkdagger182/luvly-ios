@@ -155,7 +155,11 @@ struct ReelplayRootView: View {
                     onSelectReel: { self.prepareAndOpenReel($0) }
                 )
             case .profile:
-                ReelplayProfileScreen(reels: self.reels, collections: self.collections)
+                ReelplayProfileScreen(
+                    reels: self.reels,
+                    collections: self.collections,
+                    onSelectReel: { self.prepareAndOpenReel($0) }
+                )
         }
     }
 
@@ -442,84 +446,114 @@ private struct ReelplayHomeScreen: View {
         return self.reels.filter { ReelCollection.categoryName(for: $0) == selectedCollection.name }
     }
 
+    private var isInitialLibraryEmpty: Bool {
+        self.reels.isEmpty && self.collections.isEmpty
+    }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 24) {
                 HStack(alignment: .center) {
                     Text("Reelplay")
-                        .font(.system(size: 30, weight: .bold))
+                        .font(.system(size: 36, weight: .bold))
                         .foregroundStyle(ReelplayTheme.black)
 
                     Spacer()
 
                     Button(action: self.onRefresh) {
-                        Image(systemName: "bell")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(ReelplayTheme.black)
-                            .frame(width: 38, height: 38)
-                            .background(ReelplayTheme.surface)
-                            .clipShape(Circle())
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "bell")
+                                .font(.system(size: 21, weight: .semibold))
+                                .foregroundStyle(ReelplayTheme.black)
+                                .frame(width: 58, height: 58)
+                                .background(ReelplayTheme.surface)
+                                .clipShape(Circle())
+                                .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
+
+                            Circle()
+                                .fill(ReelplayTheme.accent)
+                                .frame(width: 10, height: 10)
+                                .offset(x: -8, y: 10)
+                        }
                     }
                     .disabled(self.isLoading)
                 }
+                .padding(.top, 8)
 
-                ReelplaySearchField(text: self.$searchText, placeholder: "Search your reels...")
+                HomeHeroImportCard(featuredReel: self.reels.first, onImport: self.onImport)
 
-                SectionHeader(title: "Collections", actionTitle: "See all")
+                HomeSearchField(text: self.$searchText)
 
-                ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
-                        ForEach(self.collections.prefix(5)) { collection in
+                if self.isInitialLibraryEmpty {
+                    HomeInitialLibraryState(isLoading: self.isLoading, onImport: self.onImport)
+                } else {
+                    if let continueReel = self.reels.first {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HomeSectionHeader(title: "Continue Playing", actionTitle: "See all")
+
                             Button {
-                                self.onSelectCollection(collection)
+                                self.onSelectReel(continueReel)
                             } label: {
-                                CollectionMiniCard(
-                                    collection: collection,
-                                    isSelected: self.selectedCollectionID == collection.id
-                                )
+                                ContinuePlayingCard(reel: continueReel)
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 2)
-                }
-                .scrollIndicators(.hidden)
 
-                if let selectedCollection {
-                    SectionHeader(title: selectedCollection.name, actionTitle: "Clear")
-                        .onTapGesture {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                                self.selectedCollectionID = nil
+                    VStack(alignment: .leading, spacing: 12) {
+                        HomeSectionHeader(title: "Collections", actionTitle: "See all")
+
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 12) {
+                                ForEach(self.collections.prefix(8)) { collection in
+                                    Button {
+                                        self.onSelectCollection(collection)
+                                    } label: {
+                                        HomeCollectionCard(
+                                            collection: collection,
+                                            isSelected: self.selectedCollectionID == collection.id
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
+                            .padding(.horizontal, 1)
                         }
+                        .scrollIndicators(.hidden)
+                    }
 
-                    VStack(spacing: 10) {
-                        ForEach(self.selectedCollectionReels) { reel in
-                            Button {
-                                self.onSelectReel(reel)
-                            } label: {
-                                ReelListRow(reel: reel)
+                    if let selectedCollection {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HomeSectionHeader(title: selectedCollection.name, actionTitle: "Clear")
+                                .onTapGesture {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                                        self.selectedCollectionID = nil
+                                    }
+                                }
+
+                            ForEach(self.selectedCollectionReels) { reel in
+                                Button {
+                                    self.onSelectReel(reel)
+                                } label: {
+                                    HomeRecentReelRow(reel: reel)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
-                }
 
-                SectionHeader(title: "Recently Added")
+                    VStack(alignment: .leading, spacing: 12) {
+                        HomeSectionHeader(title: "Recently Added", actionTitle: self.reels.isEmpty ? nil : "See all")
 
-                VStack(spacing: 10) {
-                    if self.isLoading && self.reels.isEmpty {
-                        PremiumHomeLoadingCard()
-                    } else if self.reels.isEmpty {
-                        EmptyHomeCard(onImport: self.onImport)
-                    } else {
-                        ForEach(self.reels.prefix(8)) { reel in
-                            Button {
-                                self.onSelectReel(reel)
-                            } label: {
-                                ReelListRow(reel: reel)
+                        VStack(spacing: 10) {
+                            ForEach(self.reels.prefix(8)) { reel in
+                                Button {
+                                    self.onSelectReel(reel)
+                                } label: {
+                                    HomeRecentReelRow(reel: reel)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -532,8 +566,9 @@ private struct ReelplayHomeScreen: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
+            .padding(.top, -22)
+            .padding(.bottom, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .scrollIndicators(.hidden)
     }
@@ -544,37 +579,41 @@ private struct ReelplayImportScreen: View {
     let isImporting: Bool
     let errorMessage: String?
     let onImport: () -> Void
+    @State private var selectedSource = "Instagram"
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    Text("Import Reel")
-                        .font(.headline.weight(.bold))
-                        .frame(maxWidth: .infinity)
-                }
-                .overlay(alignment: .leading) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                }
+            VStack(spacing: 24) {
+                Text("Add Reel")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .frame(maxWidth: .infinity)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Paste a TikTok or\nInstagram link")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundStyle(ReelplayTheme.black)
-                        .fixedSize(horizontal: false, vertical: true)
+                Text("Save any reel and turn it into\nstep-by-step guide.")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .multilineTextAlignment(.center)
 
-                    Text("We will handle the rest.")
-                        .font(.subheadline)
-                        .foregroundStyle(ReelplayTheme.mutedText)
+                HStack(spacing: 24) {
+                    ForEach(Self.sources, id: \.name) { source in
+                        Button {
+                            self.selectedSource = source.name
+                        } label: {
+                            ImportSourceOption(
+                                source: source,
+                                isSelected: self.selectedSource == source.name
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 HStack(spacing: 10) {
-                    TextField("https://www.instagram.com/...", text: self.$importText)
+                    TextField(self.placeholder, text: self.$importText)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .font(.subheadline)
+                        .font(.subheadline.weight(.medium))
 
                     #if os(iOS)
                     Button {
@@ -588,9 +627,11 @@ private struct ReelplayImportScreen: View {
                     }
                     #endif
                 }
-                .padding(16)
+                .padding(.horizontal, 18)
+                .frame(height: 64)
                 .background(ReelplayTheme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
                 .shadow(color: .black.opacity(0.05), radius: 14, y: 7)
 
                 Button(action: self.onImport) {
@@ -610,29 +651,79 @@ private struct ReelplayImportScreen: View {
                 }
                 .disabled(self.isImporting || self.importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
+                HStack {
+                    Rectangle()
+                        .fill(ReelplayTheme.divider)
+                        .frame(height: 1)
+                    Text("or")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.mutedText)
+                    Rectangle()
+                        .fill(ReelplayTheme.divider)
+                        .frame(height: 1)
+                }
+
+                Button {
+                    #if os(iOS)
+                    if let text = UIPasteboard.general.string {
+                        self.importText = text
+                    }
+                    #endif
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 17, weight: .semibold))
+                        Text("Upload from gallery")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundStyle(ReelplayTheme.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 54)
+                    .background(ReelplayTheme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
+                }
+
                 if let errorMessage {
                     Text(errorMessage)
                         .font(.footnote.weight(.medium))
                         .foregroundStyle(.red)
                 }
 
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("How it works")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(ReelplayTheme.black)
-
-                    ImportStepRow(symbol: "square.and.arrow.down", title: "We fetch the reel", bodyText: "Extract captions, audio and metadata")
-                    ImportStepRow(symbol: "wand.and.stars", title: "Create smart steps", bodyText: "AI breaks it down into timestamped steps")
-                    ImportStepRow(symbol: "folder.badge.plus", title: "Save and organize", bodyText: "Add to collections and replay any moment")
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundStyle(Color(hex: 0x9B7A45))
+                    Text("We will analyze the reel and break it down into easy steps.")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.top, 8)
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ReelplayTheme.accent.opacity(0.18))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
             .padding(.horizontal, 20)
-            .padding(.top, 22)
+            .padding(.top, 54)
             .padding(.bottom, 28)
         }
         .scrollIndicators(.hidden)
     }
+
+    private var placeholder: String {
+        switch self.selectedSource {
+            case "TikTok": return "Paste TikTok link here..."
+            case "YouTube Shorts": return "Paste YouTube Shorts link here..."
+            default: return "Paste reel link here..."
+        }
+    }
+
+    private static let sources = [
+        ImportSource(name: "Instagram", symbol: "camera", color: Color(hex: 0xD96BA8)),
+        ImportSource(name: "TikTok", symbol: "music.note", color: ReelplayTheme.black),
+        ImportSource(name: "YouTube Shorts", symbol: "play.fill", color: Color(hex: 0xEF4444)),
+    ]
 }
 
 private struct ReelplayCollectionsScreen: View {
@@ -652,57 +743,66 @@ private struct ReelplayCollectionsScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Spacer()
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .center) {
                     Text("Collections")
-                        .font(.headline.weight(.bold))
-                    Spacer()
-                    Image(systemName: "plus")
-                        .font(.system(size: 17, weight: .semibold))
-                }
-                .foregroundStyle(ReelplayTheme.black)
+                        .font(.system(size: 30, weight: .bold))
+                        .foregroundStyle(ReelplayTheme.black)
 
-                VStack(spacing: 12) {
+                    Spacer()
+
+                    Button {
+                        self.selectedCollectionID = nil
+                    } label: {
+                        Label("New", systemImage: "plus")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .padding(.horizontal, 14)
+                            .frame(height: 40)
+                            .background(ReelplayTheme.softSurface.opacity(0.72))
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+
+                HStack(spacing: 0) {
+                    ForEach(["My Collections", "Shared with me", "Archived"], id: \.self) { tab in
+                        Text(tab)
+                            .font(.subheadline.weight(tab == "My Collections" ? .bold : .medium))
+                            .foregroundStyle(tab == "My Collections" ? ReelplayTheme.black : ReelplayTheme.mutedText)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 38)
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(tab == "My Collections" ? ReelplayTheme.black : .clear)
+                                    .frame(height: 2)
+                            }
+                    }
+                }
+
+                VStack(spacing: 14) {
                     ForEach(self.collections) { collection in
-                        Button {
+                        CollectionLibraryCard(
+                            collection: collection,
+                            reels: self.reelsForCollection(collection),
+                            isSelected: self.selectedCollectionID == collection.id
+                        )
+                        .onTapGesture {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
                                 self.selectedCollectionID = self.selectedCollectionID == collection.id ? nil : collection.id
                             }
-                        } label: {
-                            CollectionListCard(
-                                collection: collection,
-                                isSelected: self.selectedCollectionID == collection.id
-                            )
                         }
-                        .buttonStyle(.plain)
                     }
                 }
 
                 if let selectedCollection {
-                    SectionHeader(title: selectedCollection.name, actionTitle: "Selected")
+                    HomeSectionHeader(title: selectedCollection.name, actionTitle: "Selected")
 
                     VStack(spacing: 10) {
                         ForEach(self.selectedCollectionReels) { reel in
                             Button {
                                 self.onSelectReel(reel)
                             } label: {
-                                ReelListRow(reel: reel)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                if !self.reels.isEmpty {
-                    SectionHeader(title: "Recently Added")
-
-                    VStack(spacing: 10) {
-                        ForEach(self.reels.prefix(12)) { reel in
-                            Button {
-                                self.onSelectReel(reel)
-                            } label: {
-                                ReelListRow(reel: reel)
+                                CompactReelCard(reel: reel)
                             }
                             .buttonStyle(.plain)
                         }
@@ -710,10 +810,14 @@ private struct ReelplayCollectionsScreen: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 22)
+            .padding(.top, 34)
             .padding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private func reelsForCollection(_ collection: ReelCollection) -> [ReelItem] {
+        self.reels.filter { ReelCollection.categoryName(for: $0) == collection.name }
     }
 }
 
@@ -724,7 +828,7 @@ private struct ReelplaySearchScreen: View {
 
     private var filteredReels: [ReelItem] {
         let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return [] }
+        guard !query.isEmpty else { return self.reels }
 
         return self.reels.filter { reel in
             [
@@ -739,6 +843,22 @@ private struct ReelplaySearchScreen: View {
         }
     }
 
+    private var categoryChips: [String] {
+        let names = Array(Set(self.reels.map(ReelCollection.categoryName(for:)))).sorted()
+        return Array(names.prefix(4))
+    }
+
+    private var trendingSearches: [String] {
+        let titles = self.reels
+            .flatMap { reel in
+                [reel.category, reel.title]
+                    .compactMap { $0 }
+                    .map { ReelCollection.displayName($0) }
+            }
+            .filter { !$0.isEmpty }
+        return Array(NSOrderedSet(array: titles).compactMap { $0 as? String }.prefix(6))
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -746,33 +866,87 @@ private struct ReelplaySearchScreen: View {
                     .font(.system(size: 30, weight: .bold))
                     .foregroundStyle(ReelplayTheme.black)
 
-                ReelplaySearchField(text: self.$searchText, placeholder: "Search reels, steps, creators...")
+                HStack(spacing: 10) {
+                    ReelplaySearchField(text: self.$searchText, placeholder: "Search reels, topics, or creators...")
+                    Button {
+                        self.searchText = ""
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .frame(width: 42, height: 42)
+                            .background(ReelplayTheme.surface)
+                            .clipShape(Circle())
+                            .overlay(Circle().stroke(ReelplayTheme.divider))
+                    }
+                }
 
-                if self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    SearchSuggestions()
-                } else {
-                    VStack(spacing: 10) {
-                        if self.filteredReels.isEmpty {
-                            Text("No reels found")
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(ReelplayTheme.mutedText)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 18)
-                        } else {
-                            ForEach(self.filteredReels) { reel in
-                                Button {
-                                    self.onSelectReel(reel)
-                                } label: {
-                                    ReelListRow(reel: reel)
-                                }
-                                .buttonStyle(.plain)
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach(self.categoryChips, id: \.self) { chip in
+                            Button {
+                                self.searchText = chip
+                            } label: {
+                                Text(chip)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(self.searchText == chip ? .white : ReelplayTheme.black)
+                                    .padding(.horizontal, 18)
+                                    .frame(height: 40)
+                                    .background(self.searchText == chip ? ReelplayTheme.black : ReelplayTheme.surface)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(ReelplayTheme.divider))
                             }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Trending Searches")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+
+                    FlowLayout(items: self.trendingSearches) { item in
+                        Button {
+                            self.searchText = item
+                        } label: {
+                            Text(item)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(ReelplayTheme.black)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(ReelplayTheme.softSurface.opacity(0.58))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Top Reels")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+
+                    if self.filteredReels.isEmpty {
+                        Text("No reels found")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ReelplayTheme.mutedText)
+                            .padding(.vertical, 16)
+                    } else {
+                        ForEach(self.filteredReels.prefix(8)) { reel in
+                            Button {
+                                self.onSelectReel(reel)
+                            } label: {
+                                SearchResultCard(reel: reel)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 28)
+            .padding(.top, 34)
             .padding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
@@ -782,6 +956,7 @@ private struct ReelplaySearchScreen: View {
 private struct ReelplayProfileScreen: View {
     let reels: [ReelItem]
     let collections: [ReelCollection]
+    let onSelectReel: (ReelItem) -> Void
 
     private var savedHours: Int {
         max(1, self.reels.compactMap(\.durationSeconds).reduce(0, +) / 3600)
@@ -789,59 +964,89 @@ private struct ReelplayProfileScreen: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 22) {
                 HStack {
                     Spacer()
-                    Text("Profile")
-                        .font(.headline.weight(.bold))
-                    Spacer()
                     Image(systemName: "gearshape")
+                    Image(systemName: "bell")
                         .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(ReelplayTheme.black)
                 }
-                .foregroundStyle(ReelplayTheme.black)
 
-                VStack(spacing: 12) {
+                HStack(alignment: .top, spacing: 16) {
                     Circle()
-                        .fill(ReelplayTheme.accent)
-                        .frame(width: 78, height: 78)
+                        .fill(ReelplayTheme.accent.opacity(0.72))
+                        .frame(width: 82, height: 82)
                         .overlay {
                             Image(systemName: "person.fill")
-                                .font(.system(size: 34))
+                                .font(.system(size: 34, weight: .semibold))
                                 .foregroundStyle(ReelplayTheme.black)
                         }
 
-                    VStack(spacing: 3) {
-                        Text("Reelplay User")
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(self.profileName)
                             .font(.headline.weight(.bold))
-                        Text("saved@reelplay.app")
-                            .font(.caption)
+                            .foregroundStyle(ReelplayTheme.black)
+                        Text(self.profileHandle)
+                            .font(.subheadline.weight(.medium))
                             .foregroundStyle(ReelplayTheme.mutedText)
+                        Text("\(self.collections.count) collections • \(self.reels.count) reels • \(self.savedHours)h saved")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
+                Button {} label: {
+                    Text("Edit Profile")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(ReelplayTheme.softSurface.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+
                 HStack(spacing: 0) {
-                    ProfileStat(value: "\(self.reels.count)", label: "Reels Saved")
-                    ProfileStat(value: "\(self.collections.filter { $0.count > 0 }.count)", label: "Collections")
-                    ProfileStat(value: "\(self.savedHours)h", label: "Time Saved")
+                    ForEach(["Saved", "History", "Liked"], id: \.self) { tab in
+                        Text(tab)
+                            .font(.subheadline.weight(tab == "Saved" ? .bold : .medium))
+                            .foregroundStyle(tab == "Saved" ? ReelplayTheme.black : ReelplayTheme.mutedText)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 40)
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(tab == "Saved" ? ReelplayTheme.black : .clear)
+                                    .frame(height: 2)
+                            }
+                    }
                 }
 
-                VStack(spacing: 0) {
-                    ProfileMenuRow(symbol: "square.and.arrow.down", title: "Downloads", trailing: "Coming Soon")
-                    ProfileMenuRow(symbol: "bookmark", title: "Saved Steps")
-                    ProfileMenuRow(symbol: "clock", title: "Watch History")
-                    ProfileMenuRow(symbol: "bell", title: "Notifications")
-                    ProfileMenuRow(symbol: "gearshape", title: "Settings")
-                    ProfileMenuRow(symbol: "questionmark.circle", title: "Help & Feedback")
+                VStack(spacing: 10) {
+                    ForEach(self.reels.prefix(10)) { reel in
+                        Button {
+                            self.onSelectReel(reel)
+                        } label: {
+                            ProfileSavedReelRow(reel: reel)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .background(ReelplayTheme.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(ReelplayTheme.divider))
             }
             .padding(.horizontal, 20)
-            .padding(.top, 22)
+            .padding(.top, 34)
             .padding(.bottom, 24)
         }
         .scrollIndicators(.hidden)
+    }
+
+    private var profileName: String {
+        self.reels.first?.creatorDisplayName ?? "Reelplay User"
+    }
+
+    private var profileHandle: String {
+        self.reels.first?.creatorUsername.map { "@\($0)" } ?? "@reelplay"
     }
 }
 
@@ -857,43 +1062,70 @@ private struct ReelplayTabBar: View {
                     }
                     💥Feedback.selection()
                 } label: {
-                    VStack(spacing: 5) {
-                        Image(systemName: tab.symbol)
-                            .font(.system(size: tab == .add ? 22 : 20, weight: tab == .add ? .bold : .regular))
-                            .frame(width: tab == .add ? 52 : 44, height: tab == .add ? 52 : 32)
-                            .foregroundStyle(tab == .add ? .white : self.selectedTab == tab ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.62))
-                            .background {
-                                if tab == .add {
-                                    Circle()
-                                        .fill(ReelplayTheme.black)
-                                        .shadow(color: .black.opacity(0.16), radius: 10, y: 5)
-                                }
-                            }
-
-                        if tab != .add {
-                            Text(tab.title)
-                                .font(.caption2.weight(self.selectedTab == tab ? .bold : .regular))
-                                .foregroundStyle(self.selectedTab == tab ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.8)
-                        } else {
-                            Text("")
-                                .font(.caption2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 68)
+                    ReelplayTabItem(tab: tab, isSelected: self.selectedTab == tab)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 82)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 6)
-        .background(ReelplayTheme.background)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(ReelplayTheme.divider)
-                .frame(height: 1)
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay(RoundedRectangle(cornerRadius: 20).stroke(ReelplayTheme.divider))
+        .shadow(color: .black.opacity(0.08), radius: 20, y: -6)
+        .padding(.horizontal, 0)
+        .padding(.bottom, 0)
+        .background(ReelplayTheme.surface.ignoresSafeArea(edges: .bottom))
+    }
+}
+
+private struct ReelplayTabItem: View {
+    let tab: ReelplayTab
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(spacing: 5) {
+            if self.tab == .add {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: 0xB38A4A), Color(hex: 0x8B6632)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 66, height: 66)
+                        .overlay(Circle().stroke(.white.opacity(0.68), lineWidth: 5))
+                        .shadow(color: Color(hex: 0x8B6632).opacity(0.28), radius: 13, y: 7)
+
+                    Image(systemName: "link")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .offset(y: -10)
+
+                Text("Import Reel")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.74))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .offset(y: -12)
+            } else {
+                Image(systemName: self.tab.symbol)
+                    .font(.system(size: 24, weight: self.isSelected ? .bold : .regular))
+                    .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
+                    .frame(height: 30)
+
+                Text(self.tab.title)
+                    .font(.caption.weight(self.isSelected ? .bold : .regular))
+                    .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+            }
         }
     }
 }
@@ -1012,7 +1244,7 @@ private struct ReelCollection: Identifiable {
         return "Notes & Ideas"
     }
 
-    private static func displayName(_ value: String) -> String {
+    static func displayName(_ value: String) -> String {
         value
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
@@ -1113,6 +1345,712 @@ private struct ReelplaySearchField: View {
     }
 }
 
+private struct HomeSectionHeader: View {
+    let title: String
+    var actionTitle: String?
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(self.title)
+                .font(.title3.weight(.bold))
+                .foregroundStyle(ReelplayTheme.black)
+
+            Spacer()
+
+            if let actionTitle {
+                HStack(spacing: 7) {
+                    Text(actionTitle)
+                    if actionTitle.lowercased() != "clear" {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+            }
+        }
+    }
+}
+
+private struct HomeHeroImportCard: View {
+    let featuredReel: ReelItem?
+    let onImport: () -> Void
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 18)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            ReelplayTheme.surface,
+                            Color(hex: 0xF4EBDD),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(ReelplayTheme.divider, lineWidth: 1)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Paste a reel.\nGet smart steps.")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Text("Instagram, TikTok, YouTube Shorts")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ReelplayTheme.mutedText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+
+                    Button(action: self.onImport) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "link")
+                                .font(.system(size: 17, weight: .bold))
+                            Text("Paste Link")
+                                .font(.subheadline.weight(.bold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 22)
+                        .frame(height: 52)
+                        .background(ReelplayTheme.black)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.16), radius: 12, y: 7)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ZStack {
+                    HeroReelPreview(reel: self.featuredReel)
+                        .frame(width: 106, height: 140)
+                        .rotationEffect(.degrees(-8))
+                        .offset(x: -34, y: 1)
+
+                    SmartStepsPreview(reel: self.featuredReel)
+                        .frame(width: 132, height: 108)
+                        .rotationEffect(.degrees(7))
+                        .offset(x: 28, y: 22)
+
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundStyle(Color(hex: 0x9B7A45))
+                        .offset(x: 76, y: -54)
+                }
+                .frame(width: 154, height: 158)
+            }
+            .padding(22)
+        }
+        .frame(minHeight: 196)
+        .frame(maxWidth: .infinity)
+        .clipped()
+        .shadow(color: .black.opacity(0.05), radius: 18, y: 9)
+    }
+}
+
+private struct HeroReelPreview: View {
+    let reel: ReelItem?
+
+    var body: some View {
+        ZStack {
+            CachedRemoteImage(url: self.reel?.displayThumbnailURL) {
+                ReelThumbnailPlaceholder()
+            }
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.25)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            Image(systemName: "play.fill")
+                .font(.system(size: 29, weight: .bold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.25), radius: 8)
+
+            Image(systemName: self.reel?.source.lowercased() == "tiktok" ? "music.note" : "camera")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(
+                    LinearGradient(
+                        colors: [Color(hex: 0xFF6A88), Color(hex: 0x6C5CE7)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .padding(9)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.18), radius: 14, y: 8)
+    }
+}
+
+private struct SmartStepsPreview: View {
+    let reel: ReelItem?
+
+    private var previewSegments: [ReelSegment] {
+        Array((self.reel?.playbackSegments ?? []).prefix(3))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Smart Steps")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(ReelplayTheme.black)
+
+            ForEach(Array(self.rows.enumerated()), id: \.offset) { index, title in
+                HStack(spacing: 7) {
+                    Image(systemName: index == 0 ? "checkmark.circle.fill" : index == 1 ? "play.circle.fill" : "circle.fill")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(index == 1 ? Color(hex: 0x9B7A45) : ReelplayTheme.black.opacity(index == 2 ? 0.18 : 0.38))
+
+                    Text("\(index + 1) \(title)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(index == 2 ? 0.38 : 0.86))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 27)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(index == 1 ? ReelplayTheme.accent.opacity(0.32) : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .padding(13)
+        .background(ReelplayTheme.surface.opacity(0.94))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.12), radius: 14, y: 8)
+    }
+
+    private var rows: [String] {
+        let titles = self.previewSegments.map(\.title)
+        if titles.count >= 3 { return titles }
+        return titles + ["Warm-up", "Setup", "Replay"].dropFirst(titles.count)
+    }
+}
+
+private struct HomeSearchField: View {
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.45))
+
+            TextField("Search your reels or topics...", text: self.$text)
+                .font(.system(size: 17, weight: .regular))
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+
+            Rectangle()
+                .fill(ReelplayTheme.divider)
+                .frame(width: 1, height: 32)
+                .padding(.leading, 6)
+
+            Image(systemName: "slider.horizontal.3")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 62)
+        .background(ReelplayTheme.surface.opacity(0.86))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(ReelplayTheme.divider))
+        .shadow(color: .black.opacity(0.04), radius: 14, y: 7)
+    }
+}
+
+private struct ContinuePlayingCard: View {
+    let reel: ReelItem
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack(alignment: .bottomTrailing) {
+                CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                    ReelThumbnailPlaceholder()
+                }
+                .frame(width: 102, height: 84)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Text(self.durationText)
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.72))
+                    .clipShape(Capsule())
+                    .padding(8)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top) {
+                    Text(self.reel.displayTitle)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.55))
+                }
+
+                HStack(spacing: 7) {
+                    Text("Step \(self.currentStep) of \(self.totalSteps)")
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .layoutPriority(1)
+
+                    ProgressView(value: Double(self.currentStep), total: Double(self.totalSteps))
+                        .tint(ReelplayTheme.accent)
+                        .background(ReelplayTheme.black.opacity(0.08))
+                        .clipShape(Capsule())
+                        .frame(width: 72, height: 4)
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ReelplayTheme.mutedText)
+
+                Text(self.activeStepTitle)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 7) {
+                        HomePill(symbol: "sparkles", text: "AI summarized")
+                        HomePill(symbol: "clock", text: self.durationText)
+                        HomePill(symbol: self.reel.source.lowercased() == "tiktok" ? "music.note" : "camera", text: self.reel.source.capitalized)
+                    }
+
+                    HStack(spacing: 7) {
+                        HomePill(symbol: "clock", text: self.durationText)
+                        HomePill(symbol: self.reel.source.lowercased() == "tiktok" ? "music.note" : "camera", text: self.reel.source.capitalized)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "play.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(ReelplayTheme.black)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.18), radius: 12, y: 7)
+        }
+        .padding(12)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(ReelplayTheme.divider))
+        .shadow(color: .black.opacity(0.04), radius: 16, y: 8)
+        .frame(maxWidth: .infinity)
+        .clipped()
+    }
+
+    private var totalSteps: Int {
+        max(self.reel.playbackSegments.count, 1)
+    }
+
+    private var currentStep: Int {
+        min(max(1, self.totalSteps / 2), self.totalSteps)
+    }
+
+    private var activeStepTitle: String {
+        self.reel.playbackSegments.dropFirst(max(0, self.currentStep - 1)).first?.title ?? "Ready to replay"
+    }
+
+    private var durationText: String {
+        self.reel.durationDisplayText
+    }
+}
+
+private struct HomeCollectionCard: View {
+    let collection: ReelCollection
+    var isSelected: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            VStack(alignment: .leading, spacing: 18) {
+                ZStack {
+                    Circle()
+                        .fill(self.collection.tint.opacity(0.82))
+                    Image(systemName: self.collection.symbol)
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundStyle(self.collection.iconColor)
+                }
+                .frame(width: 62, height: 62)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(self.collection.name)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.62)
+
+                    Text("\(self.collection.count) \(self.collection.count == 1 ? "reel" : "reels")")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(16)
+
+            FlowLines()
+                .stroke(self.collection.iconColor.opacity(0.12), lineWidth: 1)
+                .frame(width: 150, height: 68)
+                .offset(x: 18, y: -10)
+        }
+        .frame(width: 180, height: 150)
+        .background(
+            LinearGradient(
+                colors: [
+                    self.collection.tint.opacity(0.32),
+                    ReelplayTheme.surface.opacity(0.92),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(self.isSelected ? ReelplayTheme.black.opacity(0.34) : ReelplayTheme.divider, lineWidth: self.isSelected ? 1.5 : 1))
+    }
+}
+
+private struct FlowLines: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for index in 0..<5 {
+            let offset = CGFloat(index) * 10
+            path.move(to: CGPoint(x: rect.minX, y: rect.midY + offset))
+            path.addCurve(
+                to: CGPoint(x: rect.maxX, y: rect.midY - 34 + offset),
+                control1: CGPoint(x: rect.minX + 44, y: rect.midY - 18 + offset),
+                control2: CGPoint(x: rect.maxX - 44, y: rect.midY + 22 - offset)
+            )
+        }
+        return path
+    }
+}
+
+private struct HomeRecentReelRow: View {
+    let reel: ReelItem
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack(alignment: .bottomTrailing) {
+                CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                    ReelThumbnailPlaceholder()
+                }
+                .frame(width: 96, height: 72)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Text(self.reel.durationDisplayText)
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.72))
+                    .clipShape(Capsule())
+                    .padding(6)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(self.reel.displayTitle)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+
+                Text(self.reel.displayCreator)
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    Label("\(self.reel.playbackSegments.count) smart steps", systemImage: "list.bullet")
+                    Text("•")
+                    Label(self.reel.durationDisplayText, systemImage: "clock")
+                    Text("•")
+                    Label(self.reel.source.capitalized, systemImage: self.reel.source.lowercased() == "tiktok" ? "music.note" : "camera")
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.48))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(spacing: 15) {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.55))
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(ReelplayTheme.black)
+                    .clipShape(Circle())
+                    .shadow(color: .black.opacity(0.14), radius: 9, y: 5)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(ReelplayTheme.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ReelplayTheme.divider)
+                .frame(height: 1)
+                .padding(.leading, 124)
+        }
+    }
+}
+
+private struct HomePill: View {
+    let symbol: String
+    let text: String
+
+    var body: some View {
+        Label(self.text, systemImage: self.symbol)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(ReelplayTheme.black.opacity(0.045))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+private struct ImportSource {
+    let name: String
+    let symbol: String
+    let color: Color
+}
+
+private struct ImportSourceOption: View {
+    let source: ImportSource
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(spacing: 9) {
+            Image(systemName: self.source.symbol)
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(self.source.color)
+                .frame(width: 64, height: 64)
+                .background(ReelplayTheme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(self.isSelected ? ReelplayTheme.black : ReelplayTheme.divider, lineWidth: self.isSelected ? 1.5 : 1))
+
+            Text(self.source.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ReelplayTheme.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(width: 86)
+    }
+}
+
+private struct SearchResultCard: View {
+    let reel: ReelItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ReelThumbnailBadge(reel: self.reel, width: 86, height: 68)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(self.reel.displayTitle)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+
+                Text(self.reel.displayCreator)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .lineLimit(1)
+
+                HStack(spacing: 7) {
+                    Text("\(self.reel.playbackSegments.count) steps")
+                    Text("•")
+                    Text(self.reel.source.capitalized)
+                }
+                .font(.caption)
+                .foregroundStyle(ReelplayTheme.black.opacity(0.48))
+            }
+
+            Spacer()
+
+            Image(systemName: "bookmark")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+        }
+        .padding(8)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReelplayTheme.divider))
+    }
+}
+
+private struct CompactReelCard: View {
+    let reel: ReelItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ReelThumbnailBadge(reel: self.reel, width: 82, height: 62)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(self.reel.displayTitle)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+                Text("\(self.reel.playbackSegments.count) steps • \(self.reel.source.capitalized)")
+                    .font(.caption)
+                    .foregroundStyle(ReelplayTheme.mutedText)
+            }
+            Spacer()
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+        }
+        .padding(10)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReelplayTheme.divider))
+    }
+}
+
+private struct CollectionLibraryCard: View {
+    let collection: ReelCollection
+    let reels: [ReelItem]
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Image(systemName: self.collection.symbol)
+                .font(.system(size: 25, weight: .bold))
+                .foregroundStyle(self.collection.iconColor)
+                .frame(width: 52, height: 72)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(self.collection.name)
+                            .font(.headline.weight(.bold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .lineLimit(1)
+                        Text("\(self.collection.count) \(self.collection.count == 1 ? "reel" : "reels")")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(ReelplayTheme.mutedText)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+                }
+
+                HStack(spacing: 5) {
+                    ForEach(Array(self.reels.prefix(3).enumerated()), id: \.element.id) { _, reel in
+                        CachedRemoteImage(url: reel.displayThumbnailURL) {
+                            ReelThumbnailPlaceholder()
+                        }
+                        .frame(width: 42, height: 42)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+
+                    if self.reels.count > 3 {
+                        Text("+\(self.reels.count - 3)")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+                            .frame(width: 46, height: 42)
+                            .background(ReelplayTheme.softSurface.opacity(0.68))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [
+                    self.collection.tint.opacity(self.isSelected ? 0.34 : 0.22),
+                    ReelplayTheme.surface,
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(self.isSelected ? ReelplayTheme.black.opacity(0.34) : ReelplayTheme.divider, lineWidth: self.isSelected ? 1.4 : 1))
+    }
+}
+
+private struct ProfileSavedReelRow: View {
+    let reel: ReelItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ReelThumbnailBadge(reel: self.reel, width: 86, height: 64)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(self.reel.displayTitle)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(2)
+                Text("\(self.reel.playbackSegments.count) steps • \(self.reel.source.capitalized)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.mutedText)
+            }
+
+            Spacer()
+
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+        }
+        .padding(8)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReelplayTheme.divider))
+    }
+}
+
+private struct ReelThumbnailBadge: View {
+    let reel: ReelItem
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                ReelThumbnailPlaceholder()
+            }
+
+            Text(self.reel.durationDisplayText)
+                .font(.caption2.monospacedDigit().weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(.black.opacity(0.72))
+                .clipShape(Capsule())
+                .padding(5)
+        }
+        .frame(width: self.width, height: self.height)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
 private struct CollectionMiniCard: View {
     let collection: ReelCollection
     var isSelected = false
@@ -1197,11 +2135,7 @@ private struct ReelListRow: View {
     var body: some View {
         HStack(spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                AsyncImage(url: self.reel.displayThumbnailURL) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
+                CachedRemoteImage(url: self.reel.displayThumbnailURL) {
                     ReelThumbnailPlaceholder()
                 }
                 .frame(width: 72, height: 72)
@@ -1289,8 +2223,221 @@ private struct ReelThumbnailPlaceholder: View {
     }
 }
 
+private struct HomeInitialLibraryState: View {
+    let isLoading: Bool
+    let onImport: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 12) {
+                HomeSectionHeader(title: "Continue Playing", actionTitle: nil)
+                HomeReservedCard(height: 118) {
+                    HStack(spacing: 12) {
+                        InitialStateThumbnail(isLoading: self.isLoading)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            InitialStateLine(width: 190, height: 16, isLoading: self.isLoading)
+                            InitialStateLine(width: 130, height: 12, isLoading: self.isLoading)
+                            InitialStateLine(width: 168, height: 10, isLoading: self.isLoading)
+                        }
+
+                        Spacer()
+
+                        Circle()
+                            .fill(ReelplayTheme.black.opacity(0.08))
+                            .frame(width: 48, height: 48)
+                    }
+                    .padding(14)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HomeSectionHeader(title: "Collections", actionTitle: nil)
+                HStack(spacing: 12) {
+                    ForEach(0..<2) { index in
+                        HomeReservedCard(height: 116) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Circle()
+                                    .fill(index == 0 ? ReelplayTheme.accent.opacity(0.52) : Color(hex: 0xDCE8D6))
+                                    .frame(width: 48, height: 48)
+                                InitialStateLine(width: 118, height: 15, isLoading: self.isLoading)
+                                InitialStateLine(width: 72, height: 11, isLoading: self.isLoading)
+                            }
+                            .padding(14)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HomeSectionHeader(title: "Recently Added", actionTitle: nil)
+                if self.isLoading {
+                    PremiumHomeLoadingCard()
+                } else {
+                    EmptyHomeCard(onImport: self.onImport)
+                }
+            }
+        }
+        .transition(.opacity)
+    }
+}
+
+private struct HomeReservedCard<Content: View>: View {
+    let height: CGFloat
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        self.content()
+            .frame(maxWidth: .infinity, minHeight: self.height, alignment: .leading)
+            .background(ReelplayTheme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(ReelplayTheme.divider))
+            .shadow(color: .black.opacity(0.04), radius: 14, y: 7)
+    }
+}
+
+private struct InitialStateThumbnail: View {
+    let isLoading: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(ReelplayTheme.softSurface.opacity(0.72))
+
+            ReelplayAppIconView()
+                .frame(width: 42, height: 42)
+                .opacity(0.82)
+        }
+        .frame(width: 96, height: 72)
+        .shimmering(self.isLoading)
+    }
+}
+
+private struct InitialStateLine: View {
+    let width: CGFloat
+    let height: CGFloat
+    let isLoading: Bool
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: self.height / 2)
+            .fill(ReelplayTheme.softSurface.opacity(0.78))
+            .frame(width: self.width, height: self.height)
+            .shimmering(self.isLoading)
+    }
+}
+
+private struct ReelplayShimmerModifier: ViewModifier {
+    let isActive: Bool
+    @State private var phase: CGFloat = -0.7
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if self.isActive {
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            .white.opacity(0.38),
+                            .clear,
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .offset(x: self.phase * 260)
+                    .blendMode(.plusLighter)
+                    .onAppear {
+                        withAnimation(.linear(duration: 1.25).repeatForever(autoreverses: false)) {
+                            self.phase = 0.9
+                        }
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+private extension View {
+    func shimmering(_ isActive: Bool) -> some View {
+        self.modifier(ReelplayShimmerModifier(isActive: isActive))
+    }
+}
+
+private final class ReelplayImageCache {
+    static let shared = ReelplayImageCache()
+
+    private let cache = NSCache<NSString, UIImage>()
+
+    private init() {
+        self.cache.countLimit = 240
+        self.cache.totalCostLimit = 72 * 1024 * 1024
+    }
+
+    func image(for key: String) -> UIImage? {
+        self.cache.object(forKey: key as NSString)
+    }
+
+    func set(_ image: UIImage, for key: String) {
+        let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+        self.cache.setObject(image, forKey: key as NSString, cost: cost)
+    }
+}
+
+private struct CachedRemoteImage<Placeholder: View>: View {
+    let url: URL?
+    var contentMode: ContentMode = .fill
+    @ViewBuilder var placeholder: () -> Placeholder
+    @State private var image: UIImage?
+    @State private var failedURL: URL?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: self.contentMode)
+            } else {
+                self.placeholder()
+            }
+        }
+        .task(id: self.url?.absoluteString ?? "missing") {
+            await self.load()
+        }
+    }
+
+    @MainActor
+    private func load() async {
+        guard let url else {
+            self.image = nil
+            return
+        }
+
+        if let cached = ReelplayImageCache.shared.image(for: url.absoluteString) {
+            self.image = cached
+            return
+        }
+
+        guard self.failedURL != url else { return }
+        self.image = nil
+
+        do {
+            let request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 20)
+            let (data, _) = try await URLSession.shared.data(for: request)
+            guard let image = UIImage(data: data) else {
+                self.failedURL = url
+                return
+            }
+
+            ReelplayImageCache.shared.set(image, for: url.absoluteString)
+            self.image = image
+        } catch {
+            self.failedURL = url
+        }
+    }
+}
+
 private struct EmptyHomeCard: View {
     let onImport: () -> Void
+    @State private var appeared = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -1331,6 +2478,13 @@ private struct EmptyHomeCard: View {
                 .stroke(.black.opacity(0.04), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.06), radius: 22, y: 10)
+        .opacity(self.appeared ? 1 : 0)
+        .scaleEffect(self.appeared ? 1 : 0.985)
+        .onAppear {
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.9)) {
+                self.appeared = true
+            }
+        }
     }
 }
 
@@ -1798,6 +2952,232 @@ private struct ReelDetailView: View {
     }
 }
 
+private struct ReelReferenceDetailView: View {
+    let reel: ReelItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var selectedTab = 0
+    @State private var focusedSegmentID: UUID?
+    @State private var autoplay = true
+
+    private var segments: [ReelSegment] {
+        self.reel.playbackSegments
+    }
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            ReelplayTheme.background
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    self.hero
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        self.tabs
+
+                        if self.selectedTab == 0 {
+                            self.stepsHeader
+                            VStack(spacing: 10) {
+                                ForEach(Array(self.segments.enumerated()), id: \.element.id) { index, segment in
+                                    DetailStepRow(
+                                        reel: self.reel,
+                                        segment: segment,
+                                        index: index,
+                                        isFocused: self.focusedSegmentID == segment.id
+                                    )
+                                    .onTapGesture {
+                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                            self.focusedSegmentID = self.focusedSegmentID == segment.id ? nil : segment.id
+                                        }
+                                    }
+                                }
+                            }
+                        } else if self.selectedTab == 1 {
+                            Text(self.reel.summary ?? self.reel.caption ?? "No details available yet.")
+                                .font(.subheadline)
+                                .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            Text("No comments imported for this reel.")
+                                .font(.subheadline)
+                                .foregroundStyle(ReelplayTheme.mutedText)
+                                .padding(.vertical, 20)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, 110)
+                    .background(ReelplayTheme.background)
+                    .clipShape(.rect(topLeadingRadius: 18, topTrailingRadius: 18))
+                    .offset(y: -18)
+                }
+            }
+            .scrollIndicators(.hidden)
+
+            HStack {
+                Button {
+                    self.dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .frame(width: 38, height: 38)
+                        .background(.white.opacity(0.78))
+                        .clipShape(Circle())
+                }
+
+                Spacer()
+
+                HStack(spacing: 12) {
+                    Image(systemName: "bookmark")
+                    Image(systemName: "ellipsis")
+                }
+                .font(.system(size: 17, weight: .bold))
+                .foregroundStyle(ReelplayTheme.black)
+                .padding(.horizontal, 12)
+                .frame(height: 38)
+                .background(.white.opacity(0.78))
+                .clipShape(Capsule())
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, UIApplication.shared.reelplayTopSafeArea + 8)
+        }
+        .ignoresSafeArea(edges: .top)
+    }
+
+    private var hero: some View {
+        ZStack(alignment: .bottomLeading) {
+            CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                ReelThumbnailPlaceholder()
+            }
+            .frame(height: 286)
+            .frame(maxWidth: .infinity)
+            .clipped()
+
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.72)],
+                startPoint: .center,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(self.reel.displayTitle)
+                    .font(.system(size: 25, weight: .bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                HStack(spacing: 8) {
+                    Label(self.reel.source.capitalized, systemImage: self.reel.source.lowercased() == "tiktok" ? "music.note" : "camera")
+                    Text(self.reel.displayCreator)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.82))
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 30)
+        }
+        .frame(height: 286)
+    }
+
+    private var tabs: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(self.tabTitles.enumerated()), id: \.offset) { index, title in
+                Button {
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                        self.selectedTab = index
+                    }
+                } label: {
+                    Text(title)
+                        .font(.subheadline.weight(self.selectedTab == index ? .bold : .medium))
+                        .foregroundStyle(self.selectedTab == index ? ReelplayTheme.black : ReelplayTheme.mutedText)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 42)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(self.selectedTab == index ? ReelplayTheme.black : .clear)
+                                .frame(height: 2)
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var stepsHeader: some View {
+        HStack {
+            Text("\(self.segments.count) Steps")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(ReelplayTheme.black)
+            Text("•")
+                .foregroundStyle(ReelplayTheme.mutedText)
+            Text("\(SegmentPageView.format(self.reel.durationSeconds ?? self.segments.last?.endSeconds ?? 0)) total")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(ReelplayTheme.mutedText)
+
+            Spacer()
+
+            Text("Auto-play")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+            Toggle("", isOn: self.$autoplay)
+                .labelsHidden()
+                .scaleEffect(0.72)
+        }
+    }
+
+    private var tabTitles: [String] {
+        [
+            "Steps",
+            "Details",
+            "Comments (\((self.reel.ocrEntries ?? []).count))",
+        ]
+    }
+}
+
+private struct DetailStepRow: View {
+    let reel: ReelItem
+    let segment: ReelSegment
+    let index: Int
+    let isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("\(self.index + 1)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                .frame(width: 24, height: 24)
+                .background(ReelplayTheme.surface)
+                .clipShape(Circle())
+                .overlay(Circle().stroke(ReelplayTheme.divider))
+
+            ReelThumbnailBadge(reel: self.reel, width: 76, height: 58)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(self.segment.title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+
+                Text(self.segment.description.isEmpty ? self.segment.timeRangeText : self.segment.description)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            Image(systemName: self.isFocused ? "pause.circle.fill" : "checkmark")
+                .font(.system(size: self.isFocused ? 32 : 16, weight: .bold))
+                .foregroundStyle(self.isFocused ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.54))
+                .frame(width: 36, height: 36)
+        }
+        .padding(10)
+        .background(self.isFocused ? ReelplayTheme.surface : ReelplayTheme.background)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(self.isFocused ? ReelplayTheme.divider : .clear))
+    }
+}
+
 private struct ReelSummaryView: View {
     let reel: ReelItem
     @Environment(\.dismiss) private var dismiss
@@ -1809,7 +3189,12 @@ private struct ReelSummaryView: View {
     @State private var expandDragTranslation: CGFloat = 0
     @State private var canExpandFromCurrentDrag = false
     @State private var fullscreenCollapseProgress: CGFloat = 0
-    @State private var contentScrollOffsetY: CGFloat = 0
+    @State private var contentOffsetY: CGFloat = 0
+    @State private var contentRestingTopY: CGFloat?
+    @State private var dragSessionStarted = false
+    @State private var lockedCanExpandForThisDrag = false
+    @State private var isTopPullArmed = true
+    @State private var topPullArmTask: Task<Void, Never>?
 
     init(reel: ReelItem) {
         self.reel = reel
@@ -1914,8 +3299,20 @@ private struct ReelSummaryView: View {
             }
             .coordinateSpace(name: "ReelSummaryScroll")
             .scrollIndicators(.hidden)
+            .scrollDisabled(self.expandDragTranslation > 0 || self.isShowingFullscreenVideo)
+            .reelplayScrollOffsetReader(
+                offsetY: self.$contentOffsetY,
+                restingTopY: self.$contentRestingTopY
+            )
             .onPreferenceChange(ReelSummaryScrollOffsetPreferenceKey.self) { offset in
-                self.contentScrollOffsetY = offset
+                guard #unavailable(iOS 18.0) else { return }
+                if self.contentRestingTopY == nil || offset > (self.contentRestingTopY ?? offset) {
+                    self.contentRestingTopY = offset
+                }
+                self.contentOffsetY = max(0, (self.contentRestingTopY ?? offset) - offset)
+            }
+            .onChange(of: self.contentOffsetY) { _, offset in
+                self.updateTopPullArming(for: offset)
             }
             .simultaneousGesture(self.expandFromContentSwipe())
 
@@ -1933,7 +3330,6 @@ private struct ReelSummaryView: View {
                 )
                 .frame(height: self.interactiveHeroHeight)
                 .contentShape(Rectangle())
-                .simultaneousGesture(self.expandVideoSwipe())
                 .shadow(color: .black.opacity(self.expandDragProgress * 0.22), radius: 26 * self.expandDragProgress, y: 16 * self.expandDragProgress)
 
                 Spacer()
@@ -2016,6 +3412,7 @@ private struct ReelSummaryView: View {
             }
         }
         .onDisappear {
+            self.topPullArmTask?.cancel()
             guard !self.isShowingFullscreenVideo else { return }
             self.playback.pause()
         }
@@ -2040,21 +3437,21 @@ private struct ReelSummaryView: View {
     }
 
     private var isContentScrolledToTop: Bool {
-        self.contentScrollOffsetY >= self.heroHeight - 8
+        self.contentOffsetY <= 1
     }
 
     private func expandVideoSwipe() -> some Gesture {
-        DragGesture(minimumDistance: 24)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
-                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
-                guard self.canStartOrContinueExpandDrag(value, mostlyVertical: mostlyVertical) else { return }
+                self.startExpandDragIfNeeded()
+                guard self.canStartOrContinueExpandDrag(value) else { return }
                 self.expandDragTranslation = max(0, value.translation.height)
             }
             .onEnded { value in
                 let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
                 let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
                 let canComplete = self.canExpandFromCurrentDrag && movedDown && mostlyVertical
-                self.canExpandFromCurrentDrag = false
+                self.resetExpandDragSession()
                 if canComplete {
                     self.completeDragToFullscreen()
                 } else {
@@ -2066,17 +3463,17 @@ private struct ReelSummaryView: View {
     }
 
     private func expandFromContentSwipe() -> some Gesture {
-        DragGesture(minimumDistance: 24)
+        DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
-                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
-                guard self.canStartOrContinueExpandDrag(value, mostlyVertical: mostlyVertical) else { return }
+                self.startExpandDragIfNeeded()
+                guard self.canStartOrContinueExpandDrag(value) else { return }
                 self.expandDragTranslation = max(0, value.translation.height)
             }
             .onEnded { value in
                 let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
                 let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
-                let canComplete = self.canExpandFromCurrentDrag && mostlyVertical
-                self.canExpandFromCurrentDrag = false
+                let canComplete = self.canExpandFromCurrentDrag && self.lockedCanExpandForThisDrag && mostlyVertical
+                self.resetExpandDragSession()
                 guard canComplete else {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
                         self.expandDragTranslation = 0
@@ -2094,19 +3491,57 @@ private struct ReelSummaryView: View {
             }
     }
 
-    private func canStartOrContinueExpandDrag(_ value: DragGesture.Value, mostlyVertical: Bool) -> Bool {
-        guard mostlyVertical, value.translation.height > 0 else {
+    private func startExpandDragIfNeeded() {
+        guard !self.dragSessionStarted else { return }
+        self.dragSessionStarted = true
+        self.lockedCanExpandForThisDrag = self.isContentScrolledToTop && self.isTopPullArmed
+        self.canExpandFromCurrentDrag = self.lockedCanExpandForThisDrag
+    }
+
+    private func canStartOrContinueExpandDrag(_ value: DragGesture.Value) -> Bool {
+        let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
+        let draggingDown = value.translation.height > 0
+        guard mostlyVertical, draggingDown else {
             if self.expandDragTranslation == 0 {
                 self.canExpandFromCurrentDrag = false
             }
             return false
         }
 
-        if self.expandDragTranslation == 0 {
-            self.canExpandFromCurrentDrag = self.isContentScrolledToTop
+        return self.lockedCanExpandForThisDrag && self.canExpandFromCurrentDrag
+    }
+
+    private func resetExpandDragSession() {
+        self.canExpandFromCurrentDrag = false
+        self.lockedCanExpandForThisDrag = false
+        self.dragSessionStarted = false
+
+        if self.isContentScrolledToTop, !self.isTopPullArmed {
+            self.scheduleTopPullRearm()
+        }
+    }
+
+    private func updateTopPullArming(for offset: CGFloat) {
+        if offset > 1 {
+            self.topPullArmTask?.cancel()
+            self.topPullArmTask = nil
+            self.isTopPullArmed = false
+            return
         }
 
-        return self.canExpandFromCurrentDrag
+        guard !self.dragSessionStarted, !self.isTopPullArmed else { return }
+        self.scheduleTopPullRearm()
+    }
+
+    private func scheduleTopPullRearm() {
+        guard self.topPullArmTask == nil else { return }
+
+        self.topPullArmTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000)
+            guard !Task.isCancelled else { return }
+            self.isTopPullArmed = self.isContentScrolledToTop && !self.dragSessionStarted
+            self.topPullArmTask = nil
+        }
     }
 
     private func completeDragToFullscreen() {
@@ -2213,20 +3648,16 @@ private struct ReelSummaryHero: View {
 
                         if let player {
                             FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspectFill)
-                                .frame(width: self.videoFrameWidth(in: proxy.size), height: proxy.size.height)
+                                .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
                                 .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         } else {
-                            AsyncImage(url: self.reel.displayThumbnailURL) { image in
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } placeholder: {
+                            CachedRemoteImage(url: self.reel.displayThumbnailURL) {
                                 ReelThumbnailPlaceholder()
                             }
-                            .frame(width: self.videoFrameWidth(in: proxy.size), height: proxy.size.height)
+                            .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
                             .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         }
                     }
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -2335,8 +3766,18 @@ private struct ReelSummaryHero: View {
     }
 
     private func videoFrameWidth(in size: CGSize) -> CGFloat {
-        let pinnedWidth = min(size.width, size.height * 9 / 16)
+        let pinnedWidth = min(size.width, self.pinnedVideoHeight(in: size) * 9 / 16)
         return pinnedWidth + ((size.width - pinnedWidth) * self.expandProgress)
+    }
+
+    private func videoFrameHeight(in size: CGSize) -> CGFloat {
+        let pinnedHeight = self.pinnedVideoHeight(in: size)
+        return pinnedHeight + ((size.height - pinnedHeight) * self.expandProgress)
+    }
+
+    private func pinnedVideoHeight(in size: CGSize) -> CGFloat {
+        let topInset = UIApplication.shared.reelplayTopSafeArea + 14
+        return max(1, size.height - topInset)
     }
 
     private var videoCornerRadius: CGFloat {
@@ -2613,11 +4054,7 @@ private struct SegmentFrameThumbnail: View {
             } else if !self.shouldLoad {
                 SegmentDeferredThumbnailPlaceholder()
             } else if self.didFail {
-                AsyncImage(url: self.fallbackURL) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
+                CachedRemoteImage(url: self.fallbackURL) {
                     ReelThumbnailPlaceholder()
                 }
             } else {
@@ -2636,10 +4073,17 @@ private struct SegmentFrameThumbnail: View {
 
     @MainActor
     private func loadFrame() async {
-        self.image = nil
         self.didFail = false
 
         guard self.shouldLoad else { return }
+
+        let cacheKey = self.frameCacheKey
+        if let cached = ReelplayImageCache.shared.image(for: cacheKey) {
+            self.image = cached
+            return
+        }
+
+        self.image = nil
 
         guard let videoURL else {
             self.didFail = true
@@ -2648,10 +4092,15 @@ private struct SegmentFrameThumbnail: View {
 
         do {
             let thumbnail = try await Self.extractFrame(from: videoURL, at: self.seconds)
+            ReelplayImageCache.shared.set(thumbnail, for: cacheKey)
             self.image = thumbnail
         } catch {
             self.didFail = true
         }
+    }
+
+    private var frameCacheKey: String {
+        "segment-frame:\(self.videoURL?.absoluteString ?? "missing"):\(self.seconds)"
     }
 
     private static func extractFrame(from videoURL: URL, at seconds: Int) async throws -> UIImage {
@@ -2689,11 +4138,7 @@ private struct SegmentThumbnailLoadingPlaceholder: View {
 
     var body: some View {
         ZStack {
-            AsyncImage(url: self.fallbackURL) { image in
-                image
-                    .resizable()
-                    .scaledToFill()
-            } placeholder: {
+            CachedRemoteImage(url: self.fallbackURL) {
                 ReelThumbnailPlaceholder()
             }
 
@@ -2778,11 +4223,7 @@ private struct SegmentDetailView: View {
                         if let player = self.playback.player {
                             FullScreenReelVideoPlayer(player: player)
                         } else {
-                            AsyncImage(url: self.reel.displayThumbnailURL) { image in
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            } placeholder: {
+                            CachedRemoteImage(url: self.reel.displayThumbnailURL) {
                                 ReelThumbnailPlaceholder()
                             }
                         }
@@ -3305,6 +4746,19 @@ private struct SegmentReelPlayerView: View {
 }
 
 private extension ReelItem {
+    var displayTitle: String {
+        self.title ?? self.caption ?? "Saved reel"
+    }
+
+    var displayCreator: String {
+        self.creatorUsername.map { "@\($0)" } ?? self.source.capitalized
+    }
+
+    var durationDisplayText: String {
+        guard let seconds = self.durationSeconds else { return "--:--" }
+        return SegmentPageView.format(seconds)
+    }
+
     var displayThumbnailURL: URL? {
         self.mediaItems?
             .sorted { $0.orderIndex < $1.orderIndex }
@@ -3356,6 +4810,37 @@ private struct ReelSummaryScrollOffsetPreferenceKey: PreferenceKey {
     }
 }
 
+private struct ReelplayScrollOffsetReader: ViewModifier {
+    @Binding var offsetY: CGFloat
+    @Binding var restingTopY: CGFloat?
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                    geometry.contentOffset.y
+                } action: { _, newValue in
+                    self.offsetY = max(0, newValue)
+                }
+        } else {
+            content
+                .coordinateSpace(name: "ReelSummaryScroll")
+        }
+    }
+}
+
+private extension View {
+    func reelplayScrollOffsetReader(offsetY: Binding<CGFloat>, restingTopY: Binding<CGFloat?>) -> some View {
+        self.modifier(ReelplayScrollOffsetReader(offsetY: offsetY, restingTopY: restingTopY))
+    }
+}
+
+private extension ReelSegment {
+    var timeRangeText: String {
+        "\(SegmentPageView.format(self.startSeconds)) - \(SegmentPageView.format(self.endSeconds))"
+    }
+}
+
 private extension UIApplication {
     var reelplayTopSafeArea: CGFloat {
         self.connectedScenes
@@ -3382,11 +4867,7 @@ private struct SegmentPageView: View {
                 FullScreenReelVideoPlayer(player: player)
                     .ignoresSafeArea()
             } else {
-                AsyncImage(url: self.reel.displayThumbnailURL) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
+                CachedRemoteImage(url: self.reel.displayThumbnailURL) {
                     ReelThumbnailPlaceholder()
                 }
                 .ignoresSafeArea()
