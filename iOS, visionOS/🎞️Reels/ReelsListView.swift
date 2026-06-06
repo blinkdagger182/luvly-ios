@@ -1,5 +1,6 @@
 import AVKit
 import CoreImage
+import Photos
 import SwiftUI
 import UIKit
 import Vision
@@ -12,6 +13,7 @@ struct ReelsListView: View {
 
 struct ReelplayRootView: View {
     @EnvironmentObject var app: 📱AppModel
+    @AppStorage("reelplay.lastOpenedReelID") private var lastOpenedReelID = ""
     @State private var reels: [ReelItem] = []
     @State private var selectedTab: ReelplayTab = .home
     @State private var selectedReel: ReelItem?
@@ -97,7 +99,10 @@ struct ReelplayRootView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(item: self.$selectedReel) { reel in
-                ReelDetailView(reel: reel)
+                ReelDetailView(
+                    reel: reel,
+                    onDelete: { await self.deleteReel($0) }
+                )
             }
         }
         .task {
@@ -122,6 +127,7 @@ struct ReelplayRootView: View {
                 ReelplayHomeScreen(
                     reels: self.reels,
                     collections: self.collections,
+                    continueReel: self.continuePlayingReel,
                     isLoading: self.isLoading,
                     errorMessage: self.errorMessage,
                     selectedCollectionID: self.$selectedHomeCollectionID,
@@ -131,7 +137,7 @@ struct ReelplayRootView: View {
                             self.selectedHomeCollectionID = self.selectedHomeCollectionID == collection.id ? nil : collection.id
                         }
                     },
-                    onRefresh: { Task { await self.loadReels() } },
+                    onRefresh: { await self.loadReels() },
                     onImport: { self.selectedTab = .add },
                     searchText: self.$searchText
                 )
@@ -175,6 +181,15 @@ struct ReelplayRootView: View {
             }
     }
 
+    private var continuePlayingReel: ReelItem? {
+        if let id = UUID(uuidString: self.lastOpenedReelID),
+           let reel = self.reels.first(where: { $0.id == id }) {
+            return reel
+        }
+
+        return self.reels.first
+    }
+
     private func loadReels() async {
         do {
             self.errorMessage = nil
@@ -185,6 +200,21 @@ struct ReelplayRootView: View {
             self.errorMessage = error.localizedDescription
         }
         self.isLoading = false
+    }
+
+    private func deleteReel(_ reel: ReelItem) async {
+        do {
+            self.errorMessage = nil
+            try await ReelService().deleteReel(id: reel.id)
+            self.reels.removeAll { $0.id == reel.id }
+            if self.selectedReel?.id == reel.id {
+                self.selectedReel = nil
+            }
+            💥Feedback.success()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            💥Feedback.error()
+        }
     }
 
     private func importCurrentURL() async {
@@ -248,6 +278,7 @@ struct ReelplayRootView: View {
 
     private func prepareAndOpenReel(_ reel: ReelItem) {
         guard !self.isPreparingSelectedReel else { return }
+        self.lastOpenedReelID = reel.id.uuidString
 
         if !reel.needsOCRProcessing, reel.isMicroreelReady {
             self.selectedReel = reel
@@ -331,9 +362,18 @@ struct ReelplayRootView: View {
         guard elapsedSeconds >= 5 else { return nil }
         let messages = [
             "Getting there. We are lining up the best moments.",
-            "Almost there. Tightening the timestamps now.",
-            "Still working. This reel has a little more to unpack.",
-            "Nearly ready. Building the replayable steps.",
+            "Reading the details so the steps feel precise.",
+            "Tightening the timestamps now.",
+            "Finding the moments worth replaying.",
+            "This reel has a little more to unpack.",
+            "Sorting the clips into clean steps.",
+            "Checking the on-screen text one more time.",
+            "Building the replayable steps.",
+            "Almost ready. Keeping the microreel smooth.",
+            "Final pass now. Thanks for sticking with it.",
+            "Still working. Longer reels can take a little extra time.",
+            "Finishing the timeline so playback lands cleanly.",
+            "One more moment. We are saving the best breakdown.",
         ]
         let index = min((elapsedSeconds - 5) / 5, messages.count - 1)
         return messages[index]
@@ -426,14 +466,17 @@ private extension Color {
 }
 
 private struct ReelplayHomeScreen: View {
+    private let horizontalInset: CGFloat = 20
+
     let reels: [ReelItem]
     let collections: [ReelCollection]
+    let continueReel: ReelItem?
     let isLoading: Bool
     let errorMessage: String?
     @Binding var selectedCollectionID: String?
     let onSelectReel: (ReelItem) -> Void
     let onSelectCollection: (ReelCollection) -> Void
-    let onRefresh: () -> Void
+    let onRefresh: () async -> Void
     let onImport: () -> Void
     @Binding var searchText: String
 
@@ -451,126 +494,133 @@ private struct ReelplayHomeScreen: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .center) {
-                    Text("Reelplay")
-                        .font(.system(size: 36, weight: .bold))
-                        .foregroundStyle(ReelplayTheme.black)
+        GeometryReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    HStack(alignment: .center) {
+                        Text("Reelplay")
+                            .font(.system(size: 36, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
 
-                    Spacer()
+                        Spacer()
 
-                    Button(action: self.onRefresh) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "bell")
-                                .font(.system(size: 21, weight: .semibold))
-                                .foregroundStyle(ReelplayTheme.black)
-                                .frame(width: 58, height: 58)
-                                .background(ReelplayTheme.surface)
-                                .clipShape(Circle())
-                                .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
+                        Button {
+                            Task { await self.onRefresh() }
+                        } label: {
+                            ZStack(alignment: .topTrailing) {
+                                Image(systemName: "bell")
+                                    .font(.system(size: 21, weight: .semibold))
+                                    .foregroundStyle(ReelplayTheme.black)
+                                    .frame(width: 58, height: 58)
+                                    .background(ReelplayTheme.surface)
+                                    .clipShape(Circle())
+                                    .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
 
-                            Circle()
-                                .fill(ReelplayTheme.accent)
-                                .frame(width: 10, height: 10)
-                                .offset(x: -8, y: 10)
-                        }
-                    }
-                    .disabled(self.isLoading)
-                }
-                .padding(.top, 8)
-
-                HomeHeroImportCard(featuredReel: self.reels.first, onImport: self.onImport)
-
-                HomeSearchField(text: self.$searchText)
-
-                if self.isInitialLibraryEmpty {
-                    HomeInitialLibraryState(isLoading: self.isLoading, onImport: self.onImport)
-                } else {
-                    if let continueReel = self.reels.first {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HomeSectionHeader(title: "Continue Playing", actionTitle: "See all")
-
-                            Button {
-                                self.onSelectReel(continueReel)
-                            } label: {
-                                ContinuePlayingCard(reel: continueReel)
+                                Circle()
+                                    .fill(ReelplayTheme.accent)
+                                    .frame(width: 10, height: 10)
+                                    .offset(x: -8, y: 10)
                             }
-                            .buttonStyle(.plain)
                         }
+                        .disabled(self.isLoading)
                     }
+                    .padding(.top, 8)
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        HomeSectionHeader(title: "Collections", actionTitle: "See all")
+                    HomeHeroImportCard(featuredReel: self.reels.first, onImport: self.onImport)
 
-                        ScrollView(.horizontal) {
-                            HStack(spacing: 12) {
-                                ForEach(self.collections.prefix(8)) { collection in
+                    HomeSearchField(text: self.$searchText)
+
+                    if self.isInitialLibraryEmpty {
+                        HomeInitialLibraryState(isLoading: self.isLoading, onImport: self.onImport)
+                    } else {
+                        if let continueReel {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HomeSectionHeader(title: "Continue Playing", actionTitle: "See all")
+
+                                Button {
+                                    self.onSelectReel(continueReel)
+                                } label: {
+                                    ContinuePlayingCard(reel: continueReel)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            HomeSectionHeader(title: "Collections", actionTitle: "See all")
+
+                            ScrollView(.horizontal) {
+                                HStack(spacing: 12) {
+                                    ForEach(self.collections.prefix(8)) { collection in
+                                        Button {
+                                            self.onSelectCollection(collection)
+                                        } label: {
+                                            HomeCollectionCard(
+                                                collection: collection,
+                                                isSelected: self.selectedCollectionID == collection.id
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.horizontal, 1)
+                            }
+                            .scrollIndicators(.hidden)
+                        }
+
+                        if let selectedCollection {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HomeSectionHeader(title: selectedCollection.name, actionTitle: "Clear")
+                                    .onTapGesture {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                                            self.selectedCollectionID = nil
+                                        }
+                                    }
+
+                                ForEach(self.selectedCollectionReels) { reel in
                                     Button {
-                                        self.onSelectCollection(collection)
+                                        self.onSelectReel(reel)
                                     } label: {
-                                        HomeCollectionCard(
-                                            collection: collection,
-                                            isSelected: self.selectedCollectionID == collection.id
-                                        )
+                                        HomeRecentReelRow(reel: reel)
                                     }
                                     .buttonStyle(.plain)
                                 }
                             }
-                            .padding(.horizontal, 1)
                         }
-                        .scrollIndicators(.hidden)
-                    }
 
-                    if let selectedCollection {
                         VStack(alignment: .leading, spacing: 12) {
-                            HomeSectionHeader(title: selectedCollection.name, actionTitle: "Clear")
-                                .onTapGesture {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                                        self.selectedCollectionID = nil
+                            HomeSectionHeader(title: "Recently Added", actionTitle: self.reels.isEmpty ? nil : "See all")
+
+                            VStack(spacing: 10) {
+                                ForEach(self.reels.prefix(8)) { reel in
+                                    Button {
+                                        self.onSelectReel(reel)
+                                    } label: {
+                                        HomeRecentReelRow(reel: reel)
                                     }
+                                    .buttonStyle(.plain)
                                 }
-
-                            ForEach(self.selectedCollectionReels) { reel in
-                                Button {
-                                    self.onSelectReel(reel)
-                                } label: {
-                                    HomeRecentReelRow(reel: reel)
-                                }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 12) {
-                        HomeSectionHeader(title: "Recently Added", actionTitle: self.reels.isEmpty ? nil : "See all")
-
-                        VStack(spacing: 10) {
-                            ForEach(self.reels.prefix(8)) { reel in
-                                Button {
-                                    self.onSelectReel(reel)
-                                } label: {
-                                    HomeRecentReelRow(reel: reel)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(.red)
+                            .padding(.top, 2)
                     }
                 }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.red)
-                        .padding(.top, 2)
-                }
+                .frame(width: max(0, proxy.size.width - (self.horizontalInset * 2)), alignment: .leading)
+                .padding(.horizontal, self.horizontalInset)
+                .padding(.top, -22)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, -22)
-            .padding(.bottom, 24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .scrollIndicators(.hidden)
+            .refreshable {
+                await self.onRefresh()
+            }
         }
-        .scrollIndicators(.hidden)
     }
 }
 
@@ -1064,18 +1114,16 @@ private struct ReelplayTabBar: View {
                 } label: {
                     ReelplayTabItem(tab: tab, isSelected: self.selectedTab == tab)
                         .frame(maxWidth: .infinity)
-                        .frame(height: 82)
+                        .frame(height: 64)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
+        .padding(.horizontal, 8)
+        .padding(.top, 5)
+        .padding(.bottom, 2)
         .background(ReelplayTheme.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .overlay(RoundedRectangle(cornerRadius: 20).stroke(ReelplayTheme.divider))
-        .shadow(color: .black.opacity(0.08), radius: 20, y: -6)
+        .shadow(color: .black.opacity(0.045), radius: 12, y: -4)
         .padding(.horizontal, 0)
         .padding(.bottom, 0)
         .background(ReelplayTheme.surface.ignoresSafeArea(edges: .bottom))
@@ -1098,30 +1146,30 @@ private struct ReelplayTabItem: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 66, height: 66)
-                        .overlay(Circle().stroke(.white.opacity(0.68), lineWidth: 5))
-                        .shadow(color: Color(hex: 0x8B6632).opacity(0.28), radius: 13, y: 7)
+                        .frame(width: 54, height: 54)
+                        .overlay(Circle().stroke(.white.opacity(0.7), lineWidth: 4))
+                        .shadow(color: Color(hex: 0x8B6632).opacity(0.24), radius: 10, y: 5)
 
                     Image(systemName: "link")
-                        .font(.system(size: 28, weight: .bold))
+                        .font(.system(size: 23, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .offset(y: -10)
+                .offset(y: -7)
 
                 Text("Import Reel")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(ReelplayTheme.black.opacity(0.74))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
-                    .offset(y: -12)
+                    .offset(y: -10)
             } else {
                 Image(systemName: self.tab.symbol)
-                    .font(.system(size: 24, weight: self.isSelected ? .bold : .regular))
+                    .font(.system(size: 22, weight: self.isSelected ? .bold : .regular))
                     .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
-                    .frame(height: 30)
+                    .frame(height: 26)
 
                 Text(self.tab.title)
-                    .font(.caption.weight(self.isSelected ? .bold : .regular))
+                    .font(.caption2.weight(self.isSelected ? .bold : .regular))
                     .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -2265,8 +2313,10 @@ private struct HomeInitialLibraryState: View {
                             }
                             .padding(14)
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
+                .frame(maxWidth: .infinity)
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -2278,6 +2328,7 @@ private struct HomeInitialLibraryState: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .transition(.opacity)
     }
 }
@@ -2711,15 +2762,76 @@ private struct SearchSuggestions: View {
 
 private struct FlowLayout<Content: View>: View {
     let items: [String]
+    var horizontalSpacing: CGFloat = 8
+    var verticalSpacing: CGFloat = 8
     let content: (String) -> Content
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
+        FlowLayoutContainer(items: self.items, horizontalSpacing: self.horizontalSpacing, verticalSpacing: self.verticalSpacing, content: self.content)
+    }
+}
+
+private struct FlowLayoutContainer<Content: View>: View {
+    let items: [String]
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+    let content: (String) -> Content
+    @State private var totalHeight: CGFloat = .zero
+
+    var body: some View {
+        GeometryReader { proxy in
+            self.generateContent(in: proxy)
+        }
+        .frame(height: self.totalHeight)
+    }
+
+    private func generateContent(in proxy: GeometryProxy) -> some View {
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+
+        return ZStack(alignment: .topLeading) {
             ForEach(self.items, id: \.self) { item in
                 self.content(item)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .alignmentGuide(.leading) { dimensions in
+                        if abs(width - dimensions.width) > proxy.size.width {
+                            width = 0
+                            height -= dimensions.height + self.verticalSpacing
+                        }
+
+                        let result = width
+                        width -= dimensions.width + self.horizontalSpacing
+                        return result
+                    }
+                    .alignmentGuide(.top) { dimensions in
+                        let result = height
+                        if item == self.items.last {
+                            width = 0
+                            height = 0
+                        }
+                        return result
+                    }
             }
         }
+        .background(self.heightReader)
+    }
+
+    private var heightReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(key: FlowLayoutHeightPreferenceKey.self, value: proxy.size.height)
+        }
+        .onPreferenceChange(FlowLayoutHeightPreferenceKey.self) { height in
+            guard abs(self.totalHeight - height) > 0.5 else { return }
+            self.totalHeight = height
+        }
+    }
+}
+
+private struct FlowLayoutHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -2944,9 +3056,10 @@ private struct ReelplayMark: View {
 
 private struct ReelDetailView: View {
     let reel: ReelItem
+    let onDelete: (ReelItem) async -> Void
 
     var body: some View {
-        ReelSummaryView(reel: self.reel)
+        ReelSummaryView(reel: self.reel, onDelete: self.onDelete)
             .toolbar(.hidden, for: .navigationBar)
             .background(InteractivePopGestureEnabler())
     }
@@ -3180,7 +3293,9 @@ private struct DetailStepRow: View {
 
 private struct ReelSummaryView: View {
     let reel: ReelItem
+    let onDelete: (ReelItem) async -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @StateObject private var playback: SegmentPlaybackController
     @State private var selectedTab = 0
     @State private var expandedSegmentID: UUID?
@@ -3195,9 +3310,15 @@ private struct ReelSummaryView: View {
     @State private var lockedCanExpandForThisDrag = false
     @State private var isTopPullArmed = true
     @State private var topPullArmTask: Task<Void, Never>?
+    @State private var isShowingDownloadSheet = false
+    @State private var isShowingMoreSheet = false
+    @State private var isDeleting = false
+    @State private var downloadState: ReelDownloadState = .idle
+    @State private var downloadError: String?
 
-    init(reel: ReelItem) {
+    init(reel: ReelItem, onDelete: @escaping (ReelItem) async -> Void) {
         self.reel = reel
+        self.onDelete = onDelete
         self._playback = StateObject(wrappedValue: SegmentPlaybackController(videoURL: reel.videoURL, initialDurationSeconds: reel.durationSeconds))
     }
 
@@ -3208,6 +3329,19 @@ private struct ReelSummaryView: View {
     private var expandedSegment: ReelSegment? {
         guard let expandedSegmentID else { return nil }
         return self.segments.first { $0.id == expandedSegmentID }
+    }
+
+    private var downloadSegment: ReelSegment? {
+        if let focusedSegmentID,
+           let focused = self.segments.first(where: { $0.id == focusedSegmentID }) {
+            return focused
+        }
+
+        if let expandedSegment {
+            return expandedSegment
+        }
+
+        return self.segments.first
     }
 
     private var heroHeight: CGFloat { 372 }
@@ -3330,6 +3464,7 @@ private struct ReelSummaryView: View {
                 )
                 .frame(height: self.interactiveHeroHeight)
                 .contentShape(Rectangle())
+                .simultaneousGesture(self.expandVideoSwipe())
                 .shadow(color: .black.opacity(self.expandDragProgress * 0.22), radius: 26 * self.expandDragProgress, y: 16 * self.expandDragProgress)
 
                 Spacer()
@@ -3352,8 +3487,23 @@ private struct ReelSummaryView: View {
                     Spacer()
 
                     HStack(spacing: 10) {
-                        Image(systemName: "square.and.arrow.down")
-                        Image(systemName: "ellipsis")
+                        Button {
+                            self.isShowingDownloadSheet = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                                .frame(width: 26, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(self.reel.videoURL == nil || self.downloadState.isWorking)
+
+                        Button {
+                            self.isShowingMoreSheet = true
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .frame(width: 26, height: 30)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(self.isDeleting)
                     }
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
@@ -3392,6 +3542,49 @@ private struct ReelSummaryView: View {
                     }
                 )
                 .zIndex(30)
+            }
+
+            if self.isShowingDownloadSheet {
+                ReelDownloadSheet(
+                    reel: self.reel,
+                    segment: self.downloadSegment,
+                    state: self.downloadState,
+                    errorMessage: self.downloadError,
+                    onDownloadFullVideo: { Task { await self.download(.fullVideo) } },
+                    onDownloadSegment: { Task { await self.download(.segment) } },
+                    onDismiss: {
+                        guard !self.downloadState.isWorking else { return }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                            self.isShowingDownloadSheet = false
+                            self.downloadState = .idle
+                            self.downloadError = nil
+                        }
+                    }
+                )
+                .zIndex(40)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if self.isShowingMoreSheet {
+                ReelMoreSheet(
+                    reel: self.reel,
+                    isDeleting: self.isDeleting,
+                    onOpenOriginal: {
+                        self.openURL(self.reel.sourceURL)
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                            self.isShowingMoreSheet = false
+                        }
+                    },
+                    onDelete: { Task { await self.deleteCurrentReel() } },
+                    onDismiss: {
+                        guard !self.isDeleting else { return }
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                            self.isShowingMoreSheet = false
+                        }
+                    }
+                )
+                .zIndex(40)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .ignoresSafeArea(edges: .top)
@@ -3440,19 +3633,60 @@ private struct ReelSummaryView: View {
         self.contentOffsetY <= 1
     }
 
+    private func deleteCurrentReel() async {
+        guard !self.isDeleting else { return }
+        self.isDeleting = true
+        await self.onDelete(self.reel)
+        self.isDeleting = false
+        self.isShowingMoreSheet = false
+        self.dismiss()
+    }
+
+    private func download(_ option: ReelDownloadOption) async {
+        guard !self.downloadState.isWorking else { return }
+        guard let videoURL = self.reel.videoURL else {
+            self.downloadError = "This reel does not have a downloadable video."
+            self.downloadState = .failed
+            return
+        }
+
+        do {
+            self.downloadError = nil
+            self.downloadState = option == .fullVideo ? .downloadingFullVideo : .downloadingSegment
+
+            switch option {
+                case .fullVideo:
+                    try await ReelVideoDownloadManager().saveFullVideo(from: videoURL)
+                case .segment:
+                    guard let segment = self.downloadSegment else {
+                        throw ReelVideoDownloadManager.DownloadError.missingSegment
+                    }
+                    try await ReelVideoDownloadManager().saveSegment(from: videoURL, segment: segment)
+            }
+
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                self.downloadState = .saved
+            }
+            💥Feedback.success()
+        } catch {
+            self.downloadError = error.localizedDescription
+            self.downloadState = .failed
+            💥Feedback.error()
+        }
+    }
+
     private func expandVideoSwipe() -> some Gesture {
         DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
-                self.startExpandDragIfNeeded()
-                guard self.canStartOrContinueExpandDrag(value) else { return }
+                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
+                let draggingDown = value.translation.height > 0
+                guard mostlyVertical, draggingDown else { return }
                 self.expandDragTranslation = max(0, value.translation.height)
             }
             .onEnded { value in
                 let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
                 let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
-                let canComplete = self.canExpandFromCurrentDrag && movedDown && mostlyVertical
-                self.resetExpandDragSession()
-                if canComplete {
+                if movedDown, mostlyVertical {
                     self.completeDragToFullscreen()
                 } else {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
@@ -3678,6 +3912,8 @@ private struct ReelSummaryHero: View {
 
                 VStack(spacing: 8) {
                     HStack {
+                        Spacer()
+
                         Button(action: self.onOpenFullscreen) {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                                 .font(.system(size: 16, weight: .bold))
@@ -3687,8 +3923,6 @@ private struct ReelSummaryHero: View {
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
-
-                        Spacer()
                     }
 
                     HStack {
@@ -4412,14 +4646,15 @@ private struct ReelFullscreenVideoView: View {
 
                         if let player {
                             FullScreenReelVideoPlayer(player: player)
+                                .frame(
+                                    width: self.videoFrameWidth(containerWidth: proxy.size.width),
+                                    height: self.videoFrameHeight(containerHeight: UIScreen.main.bounds.height)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         }
                     }
-                    .frame(
-                        width: self.videoFrameWidth(containerWidth: proxy.size.width),
-                        height: proxy.size.height
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(width: proxy.size.width, height: self.collapseHeight)
                 }
                 .buttonStyle(.plain)
             }
@@ -4549,8 +4784,17 @@ private struct ReelFullscreenVideoView: View {
     }
 
     private func videoFrameWidth(containerWidth: CGFloat) -> CGFloat {
-        let pinnedReelWidth = min(containerWidth, self.pinnedHeight * 9 / 16)
+        let pinnedReelWidth = min(containerWidth, self.pinnedVideoHeight * 9 / 16)
         return containerWidth - ((containerWidth - pinnedReelWidth) * self.collapseProgress)
+    }
+
+    private func videoFrameHeight(containerHeight: CGFloat) -> CGFloat {
+        containerHeight - ((containerHeight - self.pinnedVideoHeight) * self.collapseProgress)
+    }
+
+    private var pinnedVideoHeight: CGFloat {
+        let topInset = UIApplication.shared.reelplayTopSafeArea + 14
+        return max(1, self.pinnedHeight - topInset)
     }
 
     private var videoCornerRadius: CGFloat {
@@ -4849,6 +5093,14 @@ private extension UIApplication {
             .first { $0.isKeyWindow }?
             .safeAreaInsets.top ?? 0
     }
+
+    var reelplayBottomSafeArea: CGFloat {
+        self.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?
+            .safeAreaInsets.bottom ?? 0
+    }
 }
 
 private struct SegmentPageView: View {
@@ -5001,6 +5253,428 @@ private struct InteractivePopGestureEnabler: UIViewControllerRepresentable {
             navigationController.interactivePopGestureRecognizer?.isEnabled = true
             navigationController.interactivePopGestureRecognizer?.delegate = nil
         }
+    }
+}
+
+private enum ReelDownloadOption {
+    case fullVideo
+    case segment
+}
+
+private enum ReelDownloadState: Equatable {
+    case idle
+    case downloadingFullVideo
+    case downloadingSegment
+    case saved
+    case failed
+
+    var isWorking: Bool {
+        switch self {
+            case .downloadingFullVideo, .downloadingSegment:
+                true
+            case .idle, .saved, .failed:
+                false
+        }
+    }
+
+    var statusText: String {
+        switch self {
+            case .idle:
+                "Choose what to save"
+            case .downloadingFullVideo:
+                "Saving full reel..."
+            case .downloadingSegment:
+                "Exporting selected segment..."
+            case .saved:
+                "Saved to Photos"
+            case .failed:
+                "Could not save video"
+        }
+    }
+}
+
+private struct ReelDownloadSheet: View {
+    let reel: ReelItem
+    let segment: ReelSegment?
+    let state: ReelDownloadState
+    let errorMessage: String?
+    let onDownloadFullVideo: () -> Void
+    let onDownloadSegment: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.48)
+                .ignoresSafeArea()
+                .onTapGesture(perform: self.onDismiss)
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 14) {
+                    CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                        ReelThumbnailPlaceholder()
+                    }
+                    .frame(width: 58, height: 78)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Download Reel")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
+
+                        Text(self.state.statusText)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+                    }
+
+                    Spacer()
+
+                    Button(action: self.onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .frame(width: 34, height: 34)
+                            .background(ReelplayTheme.surface)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(self.state.isWorking)
+                }
+
+                if self.state.isWorking {
+                    ProgressView()
+                        .tint(ReelplayTheme.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                }
+
+                VStack(spacing: 10) {
+                    ReelDownloadChoiceButton(
+                        title: "Full video",
+                        subtitle: "Save the entire reel to Photos",
+                        symbol: "rectangle.portrait.and.arrow.right",
+                        isDisabled: self.state.isWorking || self.reel.videoURL == nil,
+                        action: self.onDownloadFullVideo
+                    )
+
+                    ReelDownloadChoiceButton(
+                        title: "Selected segment only",
+                        subtitle: self.segment?.timeRangeText ?? "Select a segment first",
+                        symbol: "scissors",
+                        isDisabled: self.state.isWorking || self.segment == nil || self.reel.videoURL == nil,
+                        action: self.onDownloadSegment
+                    )
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.red.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(20)
+            .padding(.bottom, max(12, UIApplication.shared.reelplayBottomSafeArea + 12))
+            .background(ReelplayTheme.background)
+            .clipShape(.rect(topLeadingRadius: 26, topTrailingRadius: 26))
+            .shadow(color: .black.opacity(0.18), radius: 28, y: -10)
+            .padding(.bottom, -UIApplication.shared.reelplayBottomSafeArea)
+            .ignoresSafeArea(edges: .bottom)
+        }
+    }
+}
+
+private struct ReelDownloadChoiceButton: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+    let isDisabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(spacing: 13) {
+                Image(systemName: self.symbol)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(ReelplayTheme.black)
+                    .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(self.title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+
+                    Text(self.subtitle)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.38))
+            }
+            .padding(12)
+            .background(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(ReelplayTheme.divider.opacity(0.9)))
+            .opacity(self.isDisabled ? 0.45 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(self.isDisabled)
+    }
+}
+
+private struct ReelMoreSheet: View {
+    let reel: ReelItem
+    let isDeleting: Bool
+    let onOpenOriginal: () -> Void
+    let onDelete: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.48)
+                .ignoresSafeArea()
+                .onTapGesture(perform: self.onDismiss)
+
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top, spacing: 14) {
+                    CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                        ReelThumbnailPlaceholder()
+                    }
+                    .frame(width: 58, height: 78)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Reel Options")
+                            .font(.system(size: 22, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
+
+                        Text(self.reel.sourceURL.host(percentEncoded: false) ?? self.reel.source.capitalized)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.58))
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Button(action: self.onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(ReelplayTheme.black)
+                            .frame(width: 34, height: 34)
+                            .background(ReelplayTheme.surface)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(self.isDeleting)
+                }
+
+                if self.isDeleting {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(ReelplayTheme.black)
+                        Text("Deleting reel...")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 2)
+                }
+
+                VStack(spacing: 10) {
+                    ReelMoreActionButton(
+                        title: "Go to original reel",
+                        subtitle: "Open this reel in \(self.reel.source.capitalized)",
+                        symbol: "arrow.up.right",
+                        role: .normal,
+                        isDisabled: self.isDeleting,
+                        action: self.onOpenOriginal
+                    )
+
+                    ReelMoreActionButton(
+                        title: "Delete reel",
+                        subtitle: "Remove this reel and its microreels",
+                        symbol: "trash",
+                        role: .destructive,
+                        isDisabled: self.isDeleting,
+                        action: self.onDelete
+                    )
+                }
+            }
+            .padding(20)
+            .padding(.bottom, max(12, UIApplication.shared.reelplayBottomSafeArea + 12))
+            .background(ReelplayTheme.background)
+            .clipShape(.rect(topLeadingRadius: 26, topTrailingRadius: 26))
+            .shadow(color: .black.opacity(0.18), radius: 28, y: -10)
+            .padding(.bottom, -UIApplication.shared.reelplayBottomSafeArea)
+            .ignoresSafeArea(edges: .bottom)
+        }
+    }
+}
+
+private struct ReelMoreActionButton: View {
+    enum Role {
+        case normal
+        case destructive
+    }
+
+    let title: String
+    let subtitle: String
+    let symbol: String
+    let role: Role
+    let isDisabled: Bool
+    let action: () -> Void
+
+    private var foregroundColor: Color {
+        self.role == .destructive ? .red : ReelplayTheme.black
+    }
+
+    private var iconBackground: Color {
+        self.role == .destructive ? .red.opacity(0.12) : ReelplayTheme.black
+    }
+
+    private var iconForeground: Color {
+        self.role == .destructive ? .red : .white
+    }
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(spacing: 13) {
+                Image(systemName: self.symbol)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(self.iconForeground)
+                    .frame(width: 42, height: 42)
+                    .background(self.iconBackground)
+                    .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(self.title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(self.foregroundColor)
+
+                    Text(self.subtitle)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.38))
+            }
+            .padding(12)
+            .background(.white)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(ReelplayTheme.divider.opacity(0.9)))
+            .opacity(self.isDisabled ? 0.45 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(self.isDisabled)
+    }
+}
+
+private struct ReelVideoDownloadManager {
+    enum DownloadError: LocalizedError {
+        case missingSegment
+        case photoAccessDenied
+        case exportFailed
+
+        var errorDescription: String? {
+            switch self {
+                case .missingSegment:
+                    "There is no selected segment to download."
+                case .photoAccessDenied:
+                    "Allow Photos access to save reels."
+                case .exportFailed:
+                    "The selected segment could not be exported."
+            }
+        }
+    }
+
+    func saveFullVideo(from videoURL: URL) async throws {
+        let localURL = try await self.localVideoURL(for: videoURL)
+        defer { self.removeTemporaryFile(localURL, sourceURL: videoURL) }
+        try await self.saveVideoToPhotos(localURL)
+    }
+
+    func saveSegment(from videoURL: URL, segment: ReelSegment) async throws {
+        let localURL = try await self.localVideoURL(for: videoURL)
+        defer { self.removeTemporaryFile(localURL, sourceURL: videoURL) }
+
+        let exportedURL = try await self.exportSegment(from: localURL, segment: segment)
+        defer { try? FileManager.default.removeItem(at: exportedURL) }
+        try await self.saveVideoToPhotos(exportedURL)
+    }
+
+    private func localVideoURL(for videoURL: URL) async throws -> URL {
+        guard !videoURL.isFileURL else { return videoURL }
+
+        let (temporaryURL, response) = try await URLSession.shared.download(from: videoURL)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        let destinationURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reelplay-download-\(UUID().uuidString)")
+            .appendingPathExtension(videoURL.pathExtension.isEmpty ? "mp4" : videoURL.pathExtension)
+        try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        return destinationURL
+    }
+
+    private func exportSegment(from localURL: URL, segment: ReelSegment) async throws -> URL {
+        let asset = AVURLAsset(url: localURL)
+        guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHighestQuality) else {
+            throw DownloadError.exportFailed
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reelplay-segment-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        let start = CMTime(seconds: Double(max(0, segment.startSeconds)), preferredTimescale: 600)
+        let duration = CMTime(seconds: Double(max(1, segment.endSeconds - segment.startSeconds)), preferredTimescale: 600)
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mp4
+        exportSession.timeRange = CMTimeRange(start: start, duration: duration)
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        try await withCheckedThrowingContinuation { continuation in
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                    case .completed:
+                        continuation.resume()
+                    case .failed, .cancelled:
+                        continuation.resume(throwing: exportSession.error ?? DownloadError.exportFailed)
+                    default:
+                        continuation.resume(throwing: DownloadError.exportFailed)
+                }
+            }
+        }
+
+        return outputURL
+    }
+
+    private func saveVideoToPhotos(_ localURL: URL) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            throw DownloadError.photoAccessDenied
+        }
+
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: localURL)
+        }
+    }
+
+    private func removeTemporaryFile(_ localURL: URL, sourceURL: URL) {
+        guard localURL != sourceURL else { return }
+        try? FileManager.default.removeItem(at: localURL)
     }
 }
 

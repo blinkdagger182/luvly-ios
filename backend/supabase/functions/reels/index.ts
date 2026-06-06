@@ -48,7 +48,7 @@ type OCREntry = {
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 };
 
 const supabaseUrl = requiredEnv("NEXT_PUBLIC_SUPABASE_URL");
@@ -91,6 +91,10 @@ Deno.serve(async (request) => {
       return json(await updateReelOCR(id, body.entries));
     }
 
+    if (request.method === "DELETE" && id) {
+      return json(await deleteReel(id));
+    }
+
     return json({ error: "Method not allowed" }, 405);
   } catch (error) {
     console.error(error);
@@ -119,6 +123,16 @@ async function getReel(id: string) {
 
   if (error) throw error;
   return { reel: data };
+}
+
+async function deleteReel(id: string) {
+  const { error } = await supabase
+    .from("reels")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw error;
+  return { ok: true };
 }
 
 async function updateReelOCR(id: string, rawEntries: unknown) {

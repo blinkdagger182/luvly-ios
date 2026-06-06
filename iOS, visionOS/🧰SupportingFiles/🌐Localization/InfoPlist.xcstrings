@@ -35,6 +35,18 @@
           }
         }
       }
+    },
+    "NSPhotoLibraryAddUsageDescription" : {
+      "comment" : "Privacy - Photo Library Additions Usage Description",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reelplay saves downloaded reels and segments to your photo library."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

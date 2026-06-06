@@ -67,6 +67,15 @@ struct ReelService {
         return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
     }
 
+    func deleteReel(id: UUID) async throws {
+        var request = URLRequest(url: self.baseURL.appending(path: id.uuidString))
+        request.httpMethod = "DELETE"
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+    }
+
     private func authorize(_ request: inout URLRequest) {
         request.setValue(self.anonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(self.anonKey)", forHTTPHeaderField: "Authorization")
