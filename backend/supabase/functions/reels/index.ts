@@ -83,13 +83,16 @@ Deno.serve(async (request) => {
     }
 
     if (request.method === "GET") {
-      return json(await listReels());
+      const profileId = url.searchParams.get("profile_id");
+      if (!profileId) throw new Error("Missing profile_id");
+      return json(await listProfileLibrary(profileId, url));
     }
 
     if (request.method === "POST") {
       const body = await request.json();
       const sourceUrl = normalizeReelUrl(body.url);
-      return json(await importReel(sourceUrl), 201);
+      const profileId = uuidText(body.profile_id, "Missing profile_id");
+      return json(await importReel(sourceUrl, profileId), 201);
     }
 
     if (request.method === "PATCH" && id) {
@@ -98,7 +101,9 @@ Deno.serve(async (request) => {
     }
 
     if (request.method === "DELETE" && id) {
-      return json(await deleteReel(id));
+      const profileId = url.searchParams.get("profile_id");
+      if (!profileId) throw new Error("Missing profile_id");
+      return json(await removeReelFromLibrary(id, profileId));
     }
 
     return json({ error: "Method not allowed" }, 405);
@@ -108,16 +113,32 @@ Deno.serve(async (request) => {
   }
 });
 
-async function listReels() {
+async function listProfileLibrary(profileId: string, url: URL) {
+  await ensureSocialProfile(profileId);
+  const limit = Math.min(Math.max(clampInt(Number(url.searchParams.get("limit") ?? 30), 30), 1), 50);
   const { data, error } = await supabase
-    .from("reels")
-    .select("*, reel_segments(*), reel_ocr_entries(*)")
-    .order("created_at", { ascending: false })
-    .order("order_index", { foreignTable: "reel_segments", ascending: true })
-    .order("timestamp_seconds", { foreignTable: "reel_ocr_entries", ascending: true });
+    .from("reel_profile_library")
+    .select("added_at, last_opened_at, reels(*, reel_segments(*), reel_ocr_entries(*))")
+    .eq("profile_id", profileId)
+    .order("added_at", { ascending: false })
+    .limit(limit);
 
   if (error) throw error;
-  return { reels: data ?? [] };
+  return {
+    reels: (data ?? [])
+      .map((row: Record<string, unknown>) => {
+        const reel = objectValue(row.reels);
+        if (!reel) return null;
+        return {
+          ...reel,
+          library: {
+            added_at: row.added_at,
+            last_opened_at: row.last_opened_at,
+          },
+        };
+      })
+      .filter((reel) => reel !== null),
+  };
 }
 
 async function getReel(id: string) {
@@ -131,11 +152,12 @@ async function getReel(id: string) {
   return { reel: data };
 }
 
-async function deleteReel(id: string) {
+async function removeReelFromLibrary(id: string, profileId: string) {
   const { error } = await supabase
-    .from("reels")
+    .from("reel_profile_library")
     .delete()
-    .eq("id", id);
+    .eq("profile_id", profileId)
+    .eq("reel_id", id);
 
   if (error) throw error;
   return { ok: true };
@@ -148,11 +170,30 @@ async function handleSocial(request: Request, url: URL, action?: string) {
     return await socialSummary(profileId);
   }
 
+  if (request.method === "GET" && action === "profile") {
+    const profileId = url.searchParams.get("profile_id");
+    if (!profileId) throw new Error("Missing profile_id");
+    return await getSocialProfile(profileId);
+  }
+
   if (request.method === "GET" && action === "discover") {
     return await discoverSocialReels(
       url.searchParams.get("q") ?? "",
       url.searchParams.get("niche") ?? "",
+      clampInt(Number(url.searchParams.get("limit") ?? 30), 30),
     );
+  }
+
+  if (request.method === "GET" && action === "friends") {
+    const profileId = url.searchParams.get("profile_id");
+    if (!profileId) throw new Error("Missing profile_id");
+    return await friendState(profileId);
+  }
+
+  if (request.method === "GET" && action === "inbox") {
+    const profileId = url.searchParams.get("profile_id");
+    if (!profileId) throw new Error("Missing profile_id");
+    return await shareInbox(profileId);
   }
 
   if (request.method !== "POST") {
@@ -165,19 +206,23 @@ async function handleSocial(request: Request, url: URL, action?: string) {
   if (action === "public-shares") return await setPublicShare(body);
   if (action === "collections") return await upsertSocialCollection(body);
   if (action === "friend-shares") return await shareWithFriend(body);
+  if (action === "friends") return await requestFriend(body);
+  if (action === "friend-response") return await respondToFriendRequest(body);
 
   throw new Error("Unknown social action");
 }
 
 async function socialSummary(profileId: string) {
   await ensureSocialProfile(profileId);
+  const profile = await getSocialProfileRow(profileId);
+  const handle = profile?.handle ?? `user-${profileId.slice(0, 8)}`;
 
-  const [bookmarks, publicShares, collections, friendShares, discover] = await Promise.all([
+  const [bookmarks, publicShares, collections, friendShares, friends] = await Promise.all([
     supabase.from("reel_bookmarks").select("reel_id, created_at").eq("profile_id", profileId),
     supabase.from("reel_public_shares").select("reel_id, niche_tags, share_count, save_count, view_count, shared_at").eq("profile_id", profileId).eq("is_public", true),
     supabase.from("reel_social_collections").select("*, reel_social_collection_items(reel_id, order_index)").eq("profile_id", profileId).order("created_at", { ascending: false }),
-    supabase.from("reel_friend_shares").select("*").or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${profileId}`).order("created_at", { ascending: false }).limit(50),
-    discoverSocialReels("", ""),
+    supabase.from("reel_friend_shares").select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*)), collection:reel_social_collections(*)").or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${handle}`).order("created_at", { ascending: false }).limit(30),
+    friendState(profileId),
   ]);
 
   if (bookmarks.error) throw bookmarks.error;
@@ -191,31 +236,81 @@ async function socialSummary(profileId: string) {
     public_shares: publicShares.data ?? [],
     collections: collections.data ?? [],
     friend_shares: friendShares.data ?? [],
-    niches: discover.niches,
-    popular_reels: discover.reels,
+    friendships: friends.friendships,
+    friends: friends.friends,
+    incoming_friend_requests: friends.incoming_friend_requests,
+    outgoing_friend_requests: friends.outgoing_friend_requests,
+    niches: [],
+    popular_reels: [],
   };
 }
 
-async function discoverSocialReels(query: string, niche: string) {
-  let request = supabase
+async function discoverSocialReels(query: string, niche: string, limit = 30) {
+  const resultLimit = Math.min(Math.max(limit, 1), 50);
+  let publicShareRequest = supabase
     .from("reel_public_shares")
     .select("reel_id, niche_tags, share_count, save_count, view_count, shared_at, reels(*, reel_segments(*), reel_ocr_entries(*))")
     .eq("is_public", true)
     .order("share_count", { ascending: false })
     .order("save_count", { ascending: false })
     .order("shared_at", { ascending: false })
-    .limit(50);
+    .limit(resultLimit);
 
   const normalizedNiche = normalizeNicheTag(niche);
   if (normalizedNiche) {
-    request = request.contains("niche_tags", [normalizedNiche]);
+    publicShareRequest = publicShareRequest.contains("niche_tags", [normalizedNiche]);
   }
 
-  const { data, error } = await request;
-  if (error) throw error;
+  const [publicShares, publicCollections] = await Promise.all([
+    publicShareRequest,
+    supabase
+      .from("reel_social_collections")
+      .select("id, name, created_at, reel_social_collection_items(reel_id, order_index, reels(*, reel_segments(*), reel_ocr_entries(*)))")
+      .eq("is_public", true)
+      .order("created_at", { ascending: false })
+      .limit(resultLimit),
+  ]);
+
+  if (publicShares.error) throw publicShares.error;
+  if (publicCollections.error) throw publicCollections.error;
 
   const normalizedQuery = query.trim().toLowerCase();
-  const rows = (data ?? []).filter((row: Record<string, unknown>) => {
+  const publicShareRows: Record<string, unknown>[] = (publicShares.data ?? []).map((row: Record<string, unknown>) => ({
+    ...row,
+    source_rank: 0,
+  }));
+  const publicCollectionRows: Record<string, unknown>[] = (publicCollections.data ?? []).flatMap((collection: Record<string, unknown>) => {
+    const collectionName = typeof collection.name === "string" ? collection.name : "Saved Reelplays";
+    const collectionCreatedAt = typeof collection.created_at === "string" ? collection.created_at : null;
+    const items = Array.isArray(collection.reel_social_collection_items)
+      ? collection.reel_social_collection_items as Record<string, unknown>[]
+      : [];
+
+    return items.map((item) => ({
+      reel_id: item.reel_id,
+      niche_tags: [normalizeNicheTag(collectionName) ?? "saved"],
+      share_count: 0,
+      save_count: 0,
+      view_count: 0,
+      shared_at: collectionCreatedAt,
+      reels: item.reels,
+      source_rank: 1,
+    }));
+  });
+
+  const rowsByReelId = new Map<string, Record<string, unknown>>();
+  for (const row of [...publicShareRows, ...publicCollectionRows]) {
+    const reel = objectValue(row.reels);
+    const reelId = typeof reel?.id === "string" ? reel.id : (typeof row.reel_id === "string" ? row.reel_id : null);
+    if (!reelId) continue;
+
+    const existing = rowsByReelId.get(reelId);
+    if (!existing || (numberValue(row.source_rank) ?? 1) < (numberValue(existing.source_rank) ?? 1)) {
+      rowsByReelId.set(reelId, row);
+    }
+  }
+
+  const rows = Array.from(rowsByReelId.values()).filter((row: Record<string, unknown>) => {
     if (!normalizedQuery) return true;
     const reel = objectValue(row.reels);
     const haystack = [
@@ -231,7 +326,7 @@ async function discoverSocialReels(query: string, niche: string) {
       .map((value) => value.toLowerCase())
       .join(" ");
     return haystack.includes(normalizedQuery);
-  });
+  }).slice(0, resultLimit);
 
   const reels = rows
     .map((row: Record<string, unknown>) => {
@@ -276,6 +371,21 @@ async function upsertSocialProfile(body: Record<string, unknown>) {
   return { profile: data };
 }
 
+async function getSocialProfile(profileId: string) {
+  await ensureSocialProfile(profileId);
+  return { profile: await getSocialProfileRow(profileId) };
+}
+
+async function getSocialProfileRow(profileId: string) {
+  const { data, error } = await supabase
+    .from("reel_social_profiles")
+    .select("*")
+    .eq("id", profileId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 async function ensureSocialProfile(profileId: string) {
   const { error } = await supabase
     .from("reel_social_profiles")
@@ -288,12 +398,125 @@ async function ensureSocialProfile(profileId: string) {
   if (error) throw error;
 }
 
+async function friendState(profileId: string) {
+  await ensureSocialProfile(profileId);
+
+  const { data: friendships, error } = await supabase
+    .from("reel_friendships")
+    .select("*")
+    .or(`requester_profile_id.eq.${profileId},receiver_profile_id.eq.${profileId}`)
+    .order("updated_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  const friendRows = friendships ?? [];
+  const profileIds = Array.from(new Set(friendRows.flatMap((row) => [
+    row.requester_profile_id,
+    row.receiver_profile_id,
+  ]).filter((id) => id && id !== profileId)));
+
+  const profiles = profileIds.length > 0
+    ? await supabase.from("reel_social_profiles").select("*").in("id", profileIds)
+    : { data: [], error: null };
+  if (profiles.error) throw profiles.error;
+
+  const profileById = new Map((profiles.data ?? []).map((profile) => [profile.id, profile]));
+  const decorate = (row: Record<string, unknown>) => {
+    const otherId = row.requester_profile_id === profileId ? row.receiver_profile_id : row.requester_profile_id;
+    return {
+      ...row,
+      other_profile: typeof otherId === "string" ? profileById.get(otherId) ?? null : null,
+    };
+  };
+
+  return {
+    friendships: friendRows.map(decorate),
+    friends: friendRows.filter((row) => row.status === "accepted").map(decorate),
+    incoming_friend_requests: friendRows
+      .filter((row) => row.status === "pending" && row.receiver_profile_id === profileId)
+      .map(decorate),
+    outgoing_friend_requests: friendRows
+      .filter((row) => row.status === "pending" && row.requester_profile_id === profileId)
+      .map(decorate),
+  };
+}
+
+async function requestFriend(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const receiverHandle = normalizeHandle(textOrFallback(body.receiver_handle, ""));
+  await ensureSocialProfile(profileId);
+
+  const { data: receiver, error: receiverError } = await supabase
+    .from("reel_social_profiles")
+    .select("*")
+    .eq("handle", receiverHandle)
+    .maybeSingle();
+  if (receiverError) throw receiverError;
+  if (!receiver) throw new Error("No profile found with that handle");
+  if (receiver.id === profileId) throw new Error("You cannot add yourself");
+
+  const { data: existing, error: existingError } = await supabase
+    .from("reel_friendships")
+    .select("*")
+    .or(`and(requester_profile_id.eq.${profileId},receiver_profile_id.eq.${receiver.id}),and(requester_profile_id.eq.${receiver.id},receiver_profile_id.eq.${profileId})`)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  if (!existing) {
+    const { error } = await supabase
+      .from("reel_friendships")
+      .insert({
+        requester_profile_id: profileId,
+        receiver_profile_id: receiver.id,
+        status: "pending",
+      });
+    if (error) throw error;
+  }
+
+  return await friendState(profileId);
+}
+
+async function respondToFriendRequest(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const friendshipId = uuidText(body.friendship_id, "Missing friendship_id");
+  const response = textOrFallback(body.response, "accepted");
+  const status = response === "accepted" ? "accepted" : "blocked";
+
+  await ensureSocialProfile(profileId);
+
+  const { error } = await supabase
+    .from("reel_friendships")
+    .update({ status })
+    .eq("id", friendshipId)
+    .eq("receiver_profile_id", profileId);
+  if (error) throw error;
+
+  return await friendState(profileId);
+}
+
+async function shareInbox(profileId: string) {
+  await ensureSocialProfile(profileId);
+  const profile = await getSocialProfileRow(profileId);
+  const handle = profile?.handle ?? `user-${profileId.slice(0, 8)}`;
+
+  const { data, error } = await supabase
+    .from("reel_friend_shares")
+    .select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*)), collection:reel_social_collections(*)")
+    .or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${handle}`)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+
+  return { shares: data ?? [] };
+}
+
 async function setBookmark(body: Record<string, unknown>) {
   const profileId = profileIdFromBody(body);
   const reelId = uuidText(body.reel_id, "Missing reel_id");
   const isBookmarked = body.is_bookmarked !== false;
 
   await ensureSocialProfile(profileId);
+  await addReelToProfileLibrary(profileId, reelId);
 
   if (isBookmarked) {
     const { error } = await supabase
@@ -354,6 +577,9 @@ async function upsertSocialCollection(body: Record<string, unknown>) {
   const reelIds = Array.isArray(body.reel_ids) ? body.reel_ids.map((id) => uuidText(id, "Invalid reel_id")) : [];
 
   await ensureSocialProfile(profileId);
+  for (const reelId of reelIds) {
+    await addReelToProfileLibrary(profileId, reelId);
+  }
 
   const { data: collection, error } = await supabase
     .from("reel_social_collections")
@@ -517,7 +743,9 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
   return await getReel(id);
 }
 
-async function importReel(sourceUrl: string) {
+async function importReel(sourceUrl: string, profileId: string) {
+  await ensureSocialProfile(profileId);
+
   const { data: existing } = await supabase
     .from("reels")
     .select("*, reel_segments(*)")
@@ -525,6 +753,7 @@ async function importReel(sourceUrl: string) {
     .maybeSingle();
 
   if (existing?.status === "ready") {
+    await addReelToProfileLibrary(profileId, existing.id);
     return { reel: existing };
   }
 
@@ -585,6 +814,7 @@ async function importReel(sourceUrl: string) {
       if (segmentError) throw segmentError;
     }
 
+    await addReelToProfileLibrary(profileId, reel.id);
     return await getReel(reel.id);
   } catch (error) {
     await supabase
@@ -596,6 +826,17 @@ async function importReel(sourceUrl: string) {
       .eq("id", created.id);
     throw error;
   }
+}
+
+async function addReelToProfileLibrary(profileId: string, reelId: string) {
+  const { error } = await supabase
+    .from("reel_profile_library")
+    .upsert({
+      profile_id: profileId,
+      reel_id: reelId,
+      added_at: new Date().toISOString(),
+    }, { onConflict: "profile_id,reel_id" });
+  if (error) throw error;
 }
 
 async function runApify(sourceUrl: string, source = detectSource(sourceUrl)) {

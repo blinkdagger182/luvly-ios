@@ -34,8 +34,13 @@ struct ReelService {
         self.session = session
     }
 
-    func listReels() async throws -> [ReelItem] {
-        var request = URLRequest(url: self.baseURL)
+    func listProfileLibrary(profileID: UUID, limit: Int = 30) async throws -> [ReelItem] {
+        var components = URLComponents(url: self.baseURL, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "profile_id", value: profileID.uuidString),
+            URLQueryItem(name: "limit", value: String(limit)),
+        ]
+        var request = URLRequest(url: components?.url ?? self.baseURL)
         self.authorize(&request)
 
         let (data, response) = try await self.session.data(for: request)
@@ -43,10 +48,13 @@ struct ReelService {
         return try Self.decoder.decode(ReelListResponse.self, from: data).reels
     }
 
-    func importReel(url: URL) async throws -> ReelItem {
+    func importReel(url: URL, profileID: UUID) async throws -> ReelItem {
         var request = URLRequest(url: self.baseURL)
         request.httpMethod = "POST"
-        request.httpBody = try JSONEncoder().encode(["url": url.absoluteString])
+        request.httpBody = try JSONEncoder().encode([
+            "url": url.absoluteString,
+            "profile_id": profileID.uuidString,
+        ])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         self.authorize(&request)
 
@@ -67,8 +75,10 @@ struct ReelService {
         return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
     }
 
-    func deleteReel(id: UUID) async throws {
-        var request = URLRequest(url: self.baseURL.appending(path: id.uuidString))
+    func removeFromLibrary(id: UUID, profileID: UUID) async throws {
+        var components = URLComponents(url: self.baseURL.appending(path: id.uuidString), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "profile_id", value: profileID.uuidString)]
+        var request = URLRequest(url: components?.url ?? self.baseURL.appending(path: id.uuidString))
         request.httpMethod = "DELETE"
         self.authorize(&request)
 
@@ -76,8 +86,8 @@ struct ReelService {
         try self.validate(response: response, data: data)
     }
 
-    func upsertSocialProfile(profileID: UUID, handle: String, displayName: String) async throws -> ReelSocialSummary {
-        _ = try await self.postSocial(
+    func upsertSocialProfile(profileID: UUID, handle: String, displayName: String) async throws -> ReelSocialProfile {
+        try await self.postSocial(
             action: "profile",
             body: [
                 "profile_id": profileID.uuidString,
@@ -85,8 +95,20 @@ struct ReelService {
                 "display_name": displayName,
             ] as [String: String],
             responseType: SocialProfileResponse.self
-        )
-        return try await self.socialSummary(profileID: profileID)
+        ).profile
+    }
+
+    func socialProfile(profileID: UUID) async throws -> ReelSocialProfile {
+        var components = URLComponents(url: self.baseURL.appending(path: "social/profile"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "profile_id", value: profileID.uuidString)]
+        guard let url = components?.url else { throw ServiceError.invalidResponse }
+
+        var request = URLRequest(url: url)
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(SocialProfileResponse.self, from: data).profile
     }
 
     func socialSummary(profileID: UUID) async throws -> ReelSocialSummary {
@@ -102,11 +124,12 @@ struct ReelService {
         return try Self.decoder.decode(ReelSocialSummary.self, from: data)
     }
 
-    func discoverSocialReels(query: String = "", niche: String = "") async throws -> ReelSocialDiscoverResponse {
+    func discoverSocialReels(query: String = "", niche: String = "", limit: Int = 30) async throws -> ReelSocialDiscoverResponse {
         var components = URLComponents(url: self.baseURL.appending(path: "social/discover"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "q", value: query),
             URLQueryItem(name: "niche", value: niche),
+            URLQueryItem(name: "limit", value: String(limit)),
         ]
         guard let url = components?.url else { throw ServiceError.invalidResponse }
 
@@ -162,10 +185,71 @@ struct ReelService {
             body: SocialFriendShareRequest(
                 profileID: profileID,
                 reelID: reelID,
+                collectionID: nil,
                 receiverHandle: receiverHandle,
                 message: message
             ),
             responseType: ReelSocialSummary.self
+        )
+    }
+
+    func shareCollectionWithFriend(profileID: UUID, collectionID: UUID, receiverHandle: String, message: String?) async throws -> ReelSocialSummary {
+        try await self.postSocial(
+            action: "friend-shares",
+            body: SocialFriendShareRequest(
+                profileID: profileID,
+                reelID: nil,
+                collectionID: collectionID,
+                receiverHandle: receiverHandle,
+                message: message
+            ),
+            responseType: ReelSocialSummary.self
+        )
+    }
+
+    func friendState(profileID: UUID) async throws -> ReelFriendState {
+        var components = URLComponents(url: self.baseURL.appending(path: "social/friends"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "profile_id", value: profileID.uuidString)]
+        guard let url = components?.url else { throw ServiceError.invalidResponse }
+
+        var request = URLRequest(url: url)
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(ReelFriendState.self, from: data)
+    }
+
+    func shareInbox(profileID: UUID) async throws -> ReelShareInbox {
+        var components = URLComponents(url: self.baseURL.appending(path: "social/inbox"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "profile_id", value: profileID.uuidString)]
+        guard let url = components?.url else { throw ServiceError.invalidResponse }
+
+        var request = URLRequest(url: url)
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(ReelShareInbox.self, from: data)
+    }
+
+    func requestFriend(profileID: UUID, receiverHandle: String) async throws -> ReelFriendState {
+        try await self.postSocial(
+            action: "friends",
+            body: SocialFriendRequest(profileID: profileID, receiverHandle: receiverHandle),
+            responseType: ReelFriendState.self
+        )
+    }
+
+    func respondToFriendRequest(profileID: UUID, friendshipID: UUID, accept: Bool) async throws -> ReelFriendState {
+        try await self.postSocial(
+            action: "friend-response",
+            body: SocialFriendResponseRequest(
+                profileID: profileID,
+                friendshipID: friendshipID,
+                response: accept ? "accepted" : "declined"
+            ),
+            responseType: ReelFriendState.self
         )
     }
 
@@ -234,19 +318,7 @@ struct ReelSocialDiscoverResponse: Decodable, Hashable {
 }
 
 private struct SocialProfileResponse: Decodable {
-    let profile: SocialProfile
-}
-
-private struct SocialProfile: Decodable {
-    let id: UUID
-    let handle: String
-    let displayName: String
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case handle
-        case displayName = "display_name"
-    }
+    let profile: ReelSocialProfile
 }
 
 private struct SocialBookmarkRequest: Encodable {
@@ -291,14 +363,38 @@ private struct SocialCollectionRequest: Encodable {
 
 private struct SocialFriendShareRequest: Encodable {
     let profileID: UUID
-    let reelID: UUID
+    let reelID: UUID?
+    let collectionID: UUID?
     let receiverHandle: String
     let message: String?
 
     enum CodingKeys: String, CodingKey {
         case profileID = "profile_id"
         case reelID = "reel_id"
+        case collectionID = "collection_id"
         case receiverHandle = "receiver_handle"
         case message
+    }
+}
+
+private struct SocialFriendRequest: Encodable {
+    let profileID: UUID
+    let receiverHandle: String
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case receiverHandle = "receiver_handle"
+    }
+}
+
+private struct SocialFriendResponseRequest: Encodable {
+    let profileID: UUID
+    let friendshipID: UUID
+    let response: String
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case friendshipID = "friendship_id"
+        case response
     }
 }

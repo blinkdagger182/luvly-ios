@@ -66,6 +66,10 @@ struct ReelSocialSummary: Decodable, Hashable {
     let publicShares: [ReelPublicShare]
     let collections: [ReelSocialCollection]
     let friendShares: [ReelFriendShare]
+    let friendships: [ReelFriendship]
+    let friends: [ReelFriendship]
+    let incomingFriendRequests: [ReelFriendship]
+    let outgoingFriendRequests: [ReelFriendship]
     let niches: [String]
     let popularReels: [ReelItem]
 
@@ -75,6 +79,10 @@ struct ReelSocialSummary: Decodable, Hashable {
         publicShares: [],
         collections: [],
         friendShares: [],
+        friendships: [],
+        friends: [],
+        incomingFriendRequests: [],
+        outgoingFriendRequests: [],
         niches: [],
         popularReels: []
     )
@@ -85,8 +93,44 @@ struct ReelSocialSummary: Decodable, Hashable {
         case publicShares = "public_shares"
         case collections
         case friendShares = "friend_shares"
+        case friendships
+        case friends
+        case incomingFriendRequests = "incoming_friend_requests"
+        case outgoingFriendRequests = "outgoing_friend_requests"
         case niches
         case popularReels = "popular_reels"
+    }
+}
+
+struct ReelSocialProfile: Identifiable, Decodable, Hashable {
+    let id: UUID
+    let handle: String
+    let displayName: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case handle
+        case displayName = "display_name"
+    }
+}
+
+struct ReelFriendship: Identifiable, Decodable, Hashable {
+    let id: UUID
+    let requesterProfileID: UUID
+    let receiverProfileID: UUID
+    let status: String
+    let otherProfile: ReelSocialProfile?
+    let createdAt: String?
+    let updatedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case requesterProfileID = "requester_profile_id"
+        case receiverProfileID = "receiver_profile_id"
+        case status
+        case otherProfile = "other_profile"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
     }
 }
 
@@ -146,6 +190,8 @@ struct ReelFriendShare: Identifiable, Decodable, Hashable {
     let collectionID: UUID?
     let message: String?
     let createdAt: String?
+    let reel: ReelItem?
+    let collection: ReelSocialCollection?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -156,6 +202,26 @@ struct ReelFriendShare: Identifiable, Decodable, Hashable {
         case collectionID = "collection_id"
         case message
         case createdAt = "created_at"
+        case reel
+        case collection
+    }
+}
+
+struct ReelShareInbox: Decodable, Hashable {
+    let shares: [ReelFriendShare]
+}
+
+struct ReelFriendState: Decodable, Hashable {
+    let friendships: [ReelFriendship]
+    let friends: [ReelFriendship]
+    let incomingFriendRequests: [ReelFriendship]
+    let outgoingFriendRequests: [ReelFriendship]
+
+    enum CodingKeys: String, CodingKey {
+        case friendships
+        case friends
+        case incomingFriendRequests = "incoming_friend_requests"
+        case outgoingFriendRequests = "outgoing_friend_requests"
     }
 }
 

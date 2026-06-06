@@ -248,7 +248,10 @@ private extension ShareViewController {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(ReelBackendConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
         request.setValue("Bearer \(ReelBackendConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode(["url": reelURL.absoluteString])
+        request.httpBody = try JSONEncoder().encode([
+            "url": reelURL.absoluteString,
+            "profile_id": Self.defaultSocialProfileID.uuidString,
+        ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
@@ -259,6 +262,19 @@ private extension ShareViewController {
 
             throw ImportError.backend("Import failed.")
         }
+    }
+
+    static var defaultSocialProfileID: UUID {
+        let defaults = UserDefaults.standard
+        let key = "reelplay.socialProfileID"
+        if let storedValue = defaults.string(forKey: key),
+           let storedID = UUID(uuidString: storedValue) {
+            return storedID
+        }
+
+        let profileID = UIDevice.current.identifierForVendor ?? UUID()
+        defaults.set(profileID.uuidString, forKey: key)
+        return profileID
     }
 }
 
