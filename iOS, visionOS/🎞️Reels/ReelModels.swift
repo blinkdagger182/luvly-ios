@@ -17,6 +17,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
     let status: String
     let errorMessage: String?
     let createdAt: String?
+    let social: ReelSocialStats?
     let segments: [ReelSegment]
     let ocrEntries: [ReelOCREntry]?
 
@@ -37,8 +38,124 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case status
         case errorMessage = "error_message"
         case createdAt = "created_at"
+        case social
         case segments = "reel_segments"
         case ocrEntries = "reel_ocr_entries"
+    }
+}
+
+struct ReelSocialStats: Codable, Hashable {
+    let nicheTags: [String]
+    let shareCount: Int
+    let saveCount: Int
+    let viewCount: Int
+    let sharedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case nicheTags = "niche_tags"
+        case shareCount = "share_count"
+        case saveCount = "save_count"
+        case viewCount = "view_count"
+        case sharedAt = "shared_at"
+    }
+}
+
+struct ReelSocialSummary: Decodable, Hashable {
+    let bookmarkIDs: [UUID]
+    let publicReelIDs: [UUID]
+    let publicShares: [ReelPublicShare]
+    let collections: [ReelSocialCollection]
+    let friendShares: [ReelFriendShare]
+    let niches: [String]
+    let popularReels: [ReelItem]
+
+    static let empty = ReelSocialSummary(
+        bookmarkIDs: [],
+        publicReelIDs: [],
+        publicShares: [],
+        collections: [],
+        friendShares: [],
+        niches: [],
+        popularReels: []
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case bookmarkIDs = "bookmark_ids"
+        case publicReelIDs = "public_reel_ids"
+        case publicShares = "public_shares"
+        case collections
+        case friendShares = "friend_shares"
+        case niches
+        case popularReels = "popular_reels"
+    }
+}
+
+struct ReelPublicShare: Identifiable, Decodable, Hashable {
+    var id: UUID { self.reelID }
+    let reelID: UUID
+    let nicheTags: [String]
+    let shareCount: Int
+    let saveCount: Int
+    let viewCount: Int
+    let sharedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case reelID = "reel_id"
+        case nicheTags = "niche_tags"
+        case shareCount = "share_count"
+        case saveCount = "save_count"
+        case viewCount = "view_count"
+        case sharedAt = "shared_at"
+    }
+}
+
+struct ReelSocialCollection: Identifiable, Decodable, Hashable {
+    let id: UUID
+    let name: String
+    let description: String?
+    let isPublic: Bool
+    let shareCount: Int
+    let items: [ReelSocialCollectionItem]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case description
+        case isPublic = "is_public"
+        case shareCount = "share_count"
+        case items = "reel_social_collection_items"
+    }
+}
+
+struct ReelSocialCollectionItem: Decodable, Hashable {
+    let reelID: UUID
+    let orderIndex: Int
+
+    enum CodingKeys: String, CodingKey {
+        case reelID = "reel_id"
+        case orderIndex = "order_index"
+    }
+}
+
+struct ReelFriendShare: Identifiable, Decodable, Hashable {
+    let id: UUID
+    let senderProfileID: UUID
+    let receiverProfileID: UUID?
+    let receiverHandle: String?
+    let reelID: UUID?
+    let collectionID: UUID?
+    let message: String?
+    let createdAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case senderProfileID = "sender_profile_id"
+        case receiverProfileID = "receiver_profile_id"
+        case receiverHandle = "receiver_handle"
+        case reelID = "reel_id"
+        case collectionID = "collection_id"
+        case message
+        case createdAt = "created_at"
     }
 }
 

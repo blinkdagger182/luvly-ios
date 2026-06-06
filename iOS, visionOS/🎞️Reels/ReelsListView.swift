@@ -13,8 +13,11 @@ struct ReelsListView: View {
 
 struct ReelplayRootView: View {
     @EnvironmentObject var app: 📱AppModel
+    @AppStorage("reelplay.socialProfileID") private var socialProfileID = ""
+    @AppStorage("reelplay.socialHandle") private var socialHandle = ""
     @AppStorage("reelplay.lastOpenedReelID") private var lastOpenedReelID = ""
     @State private var reels: [ReelItem] = []
+    @State private var socialSummary: ReelSocialSummary = .empty
     @State private var selectedTab: ReelplayTab = .home
     @State private var selectedReel: ReelItem?
     @State private var searchText = ""
@@ -101,11 +104,17 @@ struct ReelplayRootView: View {
             .navigationDestination(item: self.$selectedReel) { reel in
                 ReelDetailView(
                     reel: reel,
+                    isBookmarked: self.socialSummary.bookmarkIDs.contains(reel.id),
+                    isPubliclyShared: self.socialSummary.publicReelIDs.contains(reel.id),
+                    onToggleBookmark: { await self.toggleBookmark(for: reel) },
+                    onTogglePublicShare: { await self.togglePublicShare(for: reel) },
+                    onShareWithFriend: { handle in await self.share(reel, with: handle) },
                     onDelete: { await self.deleteReel($0) }
                 )
             }
         }
         .task {
+            await self.bootstrapSocialProfileIfNeeded()
             await self.loadReels()
         }
         .task(id: self.isImporting) {
@@ -144,6 +153,8 @@ struct ReelplayRootView: View {
             case .search:
                 ReelplaySearchScreen(
                     reels: self.reels,
+                    socialReels: self.socialSummary.popularReels,
+                    niches: self.socialSummary.niches,
                     searchText: self.$searchText,
                     onSelectReel: { self.prepareAndOpenReel($0) }
                 )
@@ -163,7 +174,10 @@ struct ReelplayRootView: View {
             case .profile:
                 ReelplayProfileScreen(
                     reels: self.reels,
+                    bookmarkedReelIDs: self.socialSummary.bookmarkIDs,
+                    publicReelIDs: self.socialSummary.publicReelIDs,
                     collections: self.collections,
+                    onPublishSavedList: { await self.publishSavedList() },
                     onSelectReel: { self.prepareAndOpenReel($0) }
                 )
         }
@@ -194,7 +208,11 @@ struct ReelplayRootView: View {
         do {
             self.errorMessage = nil
             self.isLoading = true
-            self.reels = try await ReelService().listReels()
+            let service = try ReelService()
+            self.reels = try await service.listReels()
+            if let profileID = self.currentSocialProfileID {
+                self.socialSummary = try await service.socialSummary(profileID: profileID)
+            }
             Task { await self.processPendingOCRReelsIfNeeded() }
         } catch {
             self.errorMessage = error.localizedDescription
@@ -210,6 +228,105 @@ struct ReelplayRootView: View {
             if self.selectedReel?.id == reel.id {
                 self.selectedReel = nil
             }
+            💥Feedback.success()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            💥Feedback.error()
+        }
+    }
+
+    private var currentSocialProfileID: UUID? {
+        UUID(uuidString: self.socialProfileID)
+    }
+
+    private func bootstrapSocialProfileIfNeeded() async {
+        do {
+            let profileID: UUID
+            if let existingID = UUID(uuidString: self.socialProfileID) {
+                profileID = existingID
+            } else {
+                profileID = UUID()
+                self.socialProfileID = profileID.uuidString
+            }
+
+            if self.socialHandle.isEmpty {
+                self.socialHandle = "user-\(profileID.uuidString.prefix(8).lowercased())"
+            }
+
+            self.socialSummary = try await ReelService().upsertSocialProfile(
+                profileID: profileID,
+                handle: self.socialHandle,
+                displayName: "Reelplay User"
+            )
+        } catch {
+            self.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func toggleBookmark(for reel: ReelItem) async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        do {
+            let isBookmarked = !self.socialSummary.bookmarkIDs.contains(reel.id)
+            self.socialSummary = try await ReelService().setBookmark(
+                profileID: profileID,
+                reelID: reel.id,
+                isBookmarked: isBookmarked
+            )
+            💥Feedback.success()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            💥Feedback.error()
+        }
+    }
+
+    private func togglePublicShare(for reel: ReelItem) async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        do {
+            let isPublic = !self.socialSummary.publicReelIDs.contains(reel.id)
+            self.socialSummary = try await ReelService().setPublicShare(
+                profileID: profileID,
+                reelID: reel.id,
+                isPublic: isPublic,
+                nicheTags: [ReelCollection.categoryName(for: reel)]
+            )
+            💥Feedback.success()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            💥Feedback.error()
+        }
+    }
+
+    private func share(_ reel: ReelItem, with handle: String) async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        let cleanedHandle = handle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedHandle.isEmpty else { return }
+
+        do {
+            self.socialSummary = try await ReelService().shareWithFriend(
+                profileID: profileID,
+                reelID: reel.id,
+                receiverHandle: cleanedHandle,
+                message: nil
+            )
+            💥Feedback.success()
+        } catch {
+            self.errorMessage = error.localizedDescription
+            💥Feedback.error()
+        }
+    }
+
+    private func publishSavedList() async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        let reelIDs = self.socialSummary.bookmarkIDs.isEmpty ? self.reels.prefix(12).map(\.id) : self.socialSummary.bookmarkIDs
+        guard !reelIDs.isEmpty else { return }
+
+        do {
+            self.socialSummary = try await ReelService().createCollection(
+                profileID: profileID,
+                name: "Saved Reelplays",
+                reelIDs: Array(reelIDs),
+                isPublic: true
+            )
             💥Feedback.success()
         } catch {
             self.errorMessage = error.localizedDescription
@@ -873,14 +990,23 @@ private struct ReelplayCollectionsScreen: View {
 
 private struct ReelplaySearchScreen: View {
     let reels: [ReelItem]
+    let socialReels: [ReelItem]
+    let niches: [String]
     @Binding var searchText: String
     let onSelectReel: (ReelItem) -> Void
 
+    private var allSearchableReels: [ReelItem] {
+        var seen = Set<UUID>()
+        return (self.socialReels + self.reels).filter { reel in
+            seen.insert(reel.id).inserted
+        }
+    }
+
     private var filteredReels: [ReelItem] {
         let query = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !query.isEmpty else { return self.reels }
+        guard !query.isEmpty else { return self.allSearchableReels }
 
-        return self.reels.filter { reel in
+        return self.allSearchableReels.filter { reel in
             [
                 reel.title,
                 reel.caption,
@@ -894,12 +1020,14 @@ private struct ReelplaySearchScreen: View {
     }
 
     private var categoryChips: [String] {
-        let names = Array(Set(self.reels.map(ReelCollection.categoryName(for:)))).sorted()
+        let socialNames = self.niches.map { ReelCollection.displayName($0) }
+        let localNames = self.reels.map(ReelCollection.categoryName(for:))
+        let names = Array(Set(socialNames + localNames)).sorted()
         return Array(names.prefix(4))
     }
 
     private var trendingSearches: [String] {
-        let titles = self.reels
+        let titles = self.allSearchableReels
             .flatMap { reel in
                 [reel.category, reel.title]
                     .compactMap { $0 }
@@ -974,7 +1102,7 @@ private struct ReelplaySearchScreen: View {
                 }
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Top Reels")
+                    Text(self.socialReels.isEmpty ? "Top Reels" : "Popular Shared Reels")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(ReelplayTheme.black)
 
@@ -1005,11 +1133,20 @@ private struct ReelplaySearchScreen: View {
 
 private struct ReelplayProfileScreen: View {
     let reels: [ReelItem]
+    let bookmarkedReelIDs: [UUID]
+    let publicReelIDs: [UUID]
     let collections: [ReelCollection]
+    let onPublishSavedList: () async -> Void
     let onSelectReel: (ReelItem) -> Void
 
+    private var savedReels: [ReelItem] {
+        let ids = Set(self.bookmarkedReelIDs)
+        let bookmarked = self.reels.filter { ids.contains($0.id) }
+        return bookmarked.isEmpty ? Array(self.reels.prefix(10)) : bookmarked
+    }
+
     private var savedHours: Int {
-        max(1, self.reels.compactMap(\.durationSeconds).reduce(0, +) / 3600)
+        max(1, self.savedReels.compactMap(\.durationSeconds).reduce(0, +) / 3600)
     }
 
     var body: some View {
@@ -1040,15 +1177,17 @@ private struct ReelplayProfileScreen: View {
                         Text(self.profileHandle)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(ReelplayTheme.mutedText)
-                        Text("\(self.collections.count) collections • \(self.reels.count) reels • \(self.savedHours)h saved")
+                        Text("\(self.collections.count) collections • \(self.bookmarkedReelIDs.count) saved • \(self.publicReelIDs.count) public")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(ReelplayTheme.black.opacity(0.58))
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 
-                Button {} label: {
-                    Text("Edit Profile")
+                Button {
+                    Task { await self.onPublishSavedList() }
+                } label: {
+                    Label("Share saved list", systemImage: "square.and.arrow.up")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(ReelplayTheme.black)
                         .frame(maxWidth: .infinity)
@@ -1074,7 +1213,7 @@ private struct ReelplayProfileScreen: View {
                 }
 
                 VStack(spacing: 10) {
-                    ForEach(self.reels.prefix(10)) { reel in
+                    ForEach(self.savedReels.prefix(10)) { reel in
                         Button {
                             self.onSelectReel(reel)
                         } label: {
@@ -3056,10 +3195,23 @@ private struct ReelplayMark: View {
 
 private struct ReelDetailView: View {
     let reel: ReelItem
+    let isBookmarked: Bool
+    let isPubliclyShared: Bool
+    let onToggleBookmark: () async -> Void
+    let onTogglePublicShare: () async -> Void
+    let onShareWithFriend: (String) async -> Void
     let onDelete: (ReelItem) async -> Void
 
     var body: some View {
-        ReelSummaryView(reel: self.reel, onDelete: self.onDelete)
+        ReelSummaryView(
+            reel: self.reel,
+            isBookmarked: self.isBookmarked,
+            isPubliclyShared: self.isPubliclyShared,
+            onToggleBookmark: self.onToggleBookmark,
+            onTogglePublicShare: self.onTogglePublicShare,
+            onShareWithFriend: self.onShareWithFriend,
+            onDelete: self.onDelete
+        )
             .toolbar(.hidden, for: .navigationBar)
             .background(InteractivePopGestureEnabler())
     }
@@ -3293,6 +3445,11 @@ private struct DetailStepRow: View {
 
 private struct ReelSummaryView: View {
     let reel: ReelItem
+    let isBookmarked: Bool
+    let isPubliclyShared: Bool
+    let onToggleBookmark: () async -> Void
+    let onTogglePublicShare: () async -> Void
+    let onShareWithFriend: (String) async -> Void
     let onDelete: (ReelItem) async -> Void
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -3316,8 +3473,21 @@ private struct ReelSummaryView: View {
     @State private var downloadState: ReelDownloadState = .idle
     @State private var downloadError: String?
 
-    init(reel: ReelItem, onDelete: @escaping (ReelItem) async -> Void) {
+    init(
+        reel: ReelItem,
+        isBookmarked: Bool,
+        isPubliclyShared: Bool,
+        onToggleBookmark: @escaping () async -> Void,
+        onTogglePublicShare: @escaping () async -> Void,
+        onShareWithFriend: @escaping (String) async -> Void,
+        onDelete: @escaping (ReelItem) async -> Void
+    ) {
         self.reel = reel
+        self.isBookmarked = isBookmarked
+        self.isPubliclyShared = isPubliclyShared
+        self.onToggleBookmark = onToggleBookmark
+        self.onTogglePublicShare = onTogglePublicShare
+        self.onShareWithFriend = onShareWithFriend
         self.onDelete = onDelete
         self._playback = StateObject(wrappedValue: SegmentPlaybackController(videoURL: reel.videoURL, initialDurationSeconds: reel.durationSeconds))
     }
@@ -3381,10 +3551,15 @@ private struct ReelSummaryView: View {
 
                         Spacer()
 
-                        Image(systemName: "bookmark")
-                            .font(.system(size: 23, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.86))
-                            .frame(width: 38, height: 38)
+                        Button {
+                            Task { await self.onToggleBookmark() }
+                        } label: {
+                            Image(systemName: self.isBookmarked ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 23, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.86))
+                                .frame(width: 38, height: 38)
+                        }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 20)
 
@@ -3568,7 +3743,12 @@ private struct ReelSummaryView: View {
             if self.isShowingMoreSheet {
                 ReelMoreSheet(
                     reel: self.reel,
+                    isBookmarked: self.isBookmarked,
+                    isPubliclyShared: self.isPubliclyShared,
                     isDeleting: self.isDeleting,
+                    onToggleBookmark: { Task { await self.onToggleBookmark() } },
+                    onTogglePublicShare: { Task { await self.onTogglePublicShare() } },
+                    onShareWithFriend: { handle in Task { await self.onShareWithFriend(handle) } },
                     onOpenOriginal: {
                         self.openURL(self.reel.sourceURL)
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
@@ -5430,10 +5610,16 @@ private struct ReelDownloadChoiceButton: View {
 
 private struct ReelMoreSheet: View {
     let reel: ReelItem
+    let isBookmarked: Bool
+    let isPubliclyShared: Bool
     let isDeleting: Bool
+    let onToggleBookmark: () -> Void
+    let onTogglePublicShare: () -> Void
+    let onShareWithFriend: (String) -> Void
     let onOpenOriginal: () -> Void
     let onDelete: () -> Void
     let onDismiss: () -> Void
+    @State private var friendHandle = ""
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -5487,6 +5673,59 @@ private struct ReelMoreSheet: View {
                 }
 
                 VStack(spacing: 10) {
+                    ReelMoreActionButton(
+                        title: self.isBookmarked ? "Remove bookmark" : "Bookmark reel",
+                        subtitle: self.isBookmarked ? "Remove from your saved list" : "Save this reel to your profile",
+                        symbol: self.isBookmarked ? "bookmark.slash" : "bookmark",
+                        role: .normal,
+                        isDisabled: self.isDeleting,
+                        action: self.onToggleBookmark
+                    )
+
+                    ReelMoreActionButton(
+                        title: self.isPubliclyShared ? "Remove from social" : "Share to social",
+                        subtitle: self.isPubliclyShared ? "Hide it from public discovery" : "Opt this reel into public discovery",
+                        symbol: self.isPubliclyShared ? "eye.slash" : "network",
+                        role: .normal,
+                        isDisabled: self.isDeleting,
+                        action: self.onTogglePublicShare
+                    )
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Share to a friend")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(ReelplayTheme.black)
+
+                        HStack(spacing: 10) {
+                            TextField("@handle", text: self.$friendHandle)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.subheadline.weight(.medium))
+                                .padding(.horizontal, 12)
+                                .frame(height: 42)
+                                .background(ReelplayTheme.background)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                            Button {
+                                self.onShareWithFriend(self.friendHandle)
+                                self.friendHandle = ""
+                            } label: {
+                                Image(systemName: "paperplane.fill")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 42, height: 42)
+                                    .background(ReelplayTheme.black)
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(self.isDeleting || self.friendHandle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    .padding(12)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(ReelplayTheme.divider.opacity(0.9)))
+
                     ReelMoreActionButton(
                         title: "Go to original reel",
                         subtitle: "Open this reel in \(self.reel.source.capitalized)",

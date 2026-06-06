@@ -70,6 +70,12 @@ Deno.serve(async (request) => {
   try {
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
+    const socialIndex = parts.indexOf("social");
+    if (socialIndex >= 0) {
+      const action = parts[socialIndex + 1];
+      return json(await handleSocial(request, url, action), request.method === "POST" ? 201 : 200);
+    }
+
     const id = parts[parts.length - 1] !== "reels" ? parts[parts.length - 1] : undefined;
 
     if (request.method === "GET" && id) {
@@ -133,6 +139,303 @@ async function deleteReel(id: string) {
 
   if (error) throw error;
   return { ok: true };
+}
+
+async function handleSocial(request: Request, url: URL, action?: string) {
+  if (request.method === "GET" && (!action || action === "summary")) {
+    const profileId = url.searchParams.get("profile_id");
+    if (!profileId) throw new Error("Missing profile_id");
+    return await socialSummary(profileId);
+  }
+
+  if (request.method === "GET" && action === "discover") {
+    return await discoverSocialReels(
+      url.searchParams.get("q") ?? "",
+      url.searchParams.get("niche") ?? "",
+    );
+  }
+
+  if (request.method !== "POST") {
+    throw new Error("Method not allowed");
+  }
+
+  const body = await request.json();
+  if (action === "profile") return await upsertSocialProfile(body);
+  if (action === "bookmarks") return await setBookmark(body);
+  if (action === "public-shares") return await setPublicShare(body);
+  if (action === "collections") return await upsertSocialCollection(body);
+  if (action === "friend-shares") return await shareWithFriend(body);
+
+  throw new Error("Unknown social action");
+}
+
+async function socialSummary(profileId: string) {
+  await ensureSocialProfile(profileId);
+
+  const [bookmarks, publicShares, collections, friendShares, discover] = await Promise.all([
+    supabase.from("reel_bookmarks").select("reel_id, created_at").eq("profile_id", profileId),
+    supabase.from("reel_public_shares").select("reel_id, niche_tags, share_count, save_count, view_count, shared_at").eq("profile_id", profileId).eq("is_public", true),
+    supabase.from("reel_social_collections").select("*, reel_social_collection_items(reel_id, order_index)").eq("profile_id", profileId).order("created_at", { ascending: false }),
+    supabase.from("reel_friend_shares").select("*").or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${profileId}`).order("created_at", { ascending: false }).limit(50),
+    discoverSocialReels("", ""),
+  ]);
+
+  if (bookmarks.error) throw bookmarks.error;
+  if (publicShares.error) throw publicShares.error;
+  if (collections.error) throw collections.error;
+  if (friendShares.error) throw friendShares.error;
+
+  return {
+    bookmark_ids: (bookmarks.data ?? []).map((row) => row.reel_id),
+    public_reel_ids: (publicShares.data ?? []).map((row) => row.reel_id),
+    public_shares: publicShares.data ?? [],
+    collections: collections.data ?? [],
+    friend_shares: friendShares.data ?? [],
+    niches: discover.niches,
+    popular_reels: discover.reels,
+  };
+}
+
+async function discoverSocialReels(query: string, niche: string) {
+  let request = supabase
+    .from("reel_public_shares")
+    .select("reel_id, niche_tags, share_count, save_count, view_count, shared_at, reels(*, reel_segments(*), reel_ocr_entries(*))")
+    .eq("is_public", true)
+    .order("share_count", { ascending: false })
+    .order("save_count", { ascending: false })
+    .order("shared_at", { ascending: false })
+    .limit(50);
+
+  const normalizedNiche = normalizeNicheTag(niche);
+  if (normalizedNiche) {
+    request = request.contains("niche_tags", [normalizedNiche]);
+  }
+
+  const { data, error } = await request;
+  if (error) throw error;
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const rows = (data ?? []).filter((row: Record<string, unknown>) => {
+    if (!normalizedQuery) return true;
+    const reel = objectValue(row.reels);
+    const haystack = [
+      reel?.title,
+      reel?.summary,
+      reel?.caption,
+      reel?.category,
+      reel?.creator_username,
+      row.niche_tags,
+    ]
+      .flat()
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.toLowerCase())
+      .join(" ");
+    return haystack.includes(normalizedQuery);
+  });
+
+  const reels = rows
+    .map((row: Record<string, unknown>) => {
+      const reel = objectValue(row.reels);
+      if (!reel?.id) return null;
+      return {
+        ...reel,
+        social: {
+        niche_tags: Array.isArray(row.niche_tags) ? row.niche_tags : [],
+        share_count: numberValue(row.share_count) ?? 0,
+        save_count: numberValue(row.save_count) ?? 0,
+        view_count: numberValue(row.view_count) ?? 0,
+        shared_at: row.shared_at,
+        },
+      };
+    })
+    .filter((reel) => reel !== null);
+
+  const niches = Array.from(new Set(rows.flatMap((row: Record<string, unknown>) => (
+    Array.isArray(row.niche_tags) ? row.niche_tags.filter((tag) => typeof tag === "string") : []
+  )))).sort();
+
+  return { reels, niches };
+}
+
+async function upsertSocialProfile(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const handle = normalizeHandle(textOrFallback(body.handle, `user-${profileId.slice(0, 8)}`));
+  const displayName = textOrFallback(body.display_name, "Reelplay User");
+
+  const { data, error } = await supabase
+    .from("reel_social_profiles")
+    .upsert({
+      id: profileId,
+      handle,
+      display_name: displayName,
+    }, { onConflict: "id" })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return { profile: data };
+}
+
+async function ensureSocialProfile(profileId: string) {
+  const { error } = await supabase
+    .from("reel_social_profiles")
+    .upsert({
+      id: profileId,
+      handle: `user-${profileId.slice(0, 8)}`,
+      display_name: "Reelplay User",
+    }, { onConflict: "id", ignoreDuplicates: true });
+
+  if (error) throw error;
+}
+
+async function setBookmark(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const reelId = uuidText(body.reel_id, "Missing reel_id");
+  const isBookmarked = body.is_bookmarked !== false;
+
+  await ensureSocialProfile(profileId);
+
+  if (isBookmarked) {
+    const { error } = await supabase
+      .from("reel_bookmarks")
+      .upsert({ profile_id: profileId, reel_id: reelId }, { onConflict: "profile_id,reel_id" });
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("reel_bookmarks")
+      .delete()
+      .eq("profile_id", profileId)
+      .eq("reel_id", reelId);
+    if (error) throw error;
+  }
+
+  await refreshPublicSaveCount(reelId);
+  return await socialSummary(profileId);
+}
+
+async function setPublicShare(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const reelId = uuidText(body.reel_id, "Missing reel_id");
+  const isPublic = body.is_public !== false;
+  const nicheTags = normalizeNicheTags(body.niche_tags);
+
+  await ensureSocialProfile(profileId);
+
+  if (isPublic) {
+    const { data: reel } = await supabase.from("reels").select("category").eq("id", reelId).maybeSingle();
+    const fallbackTag = normalizeNicheTag(reel?.category);
+    const tags = nicheTags.length > 0 ? nicheTags : (fallbackTag ? [fallbackTag] : ["general"]);
+
+    const { error } = await supabase
+      .from("reel_public_shares")
+      .upsert({
+        reel_id: reelId,
+        profile_id: profileId,
+        niche_tags: tags,
+        is_public: true,
+      }, { onConflict: "reel_id" });
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("reel_public_shares")
+      .update({ is_public: false })
+      .eq("reel_id", reelId)
+      .eq("profile_id", profileId);
+    if (error) throw error;
+  }
+
+  return await socialSummary(profileId);
+}
+
+async function upsertSocialCollection(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const name = textOrFallback(body.name, "Saved reels");
+  const description = textOrNull(body.description);
+  const reelIds = Array.isArray(body.reel_ids) ? body.reel_ids.map((id) => uuidText(id, "Invalid reel_id")) : [];
+
+  await ensureSocialProfile(profileId);
+
+  const { data: collection, error } = await supabase
+    .from("reel_social_collections")
+    .insert({
+      profile_id: profileId,
+      name,
+      description,
+      is_public: body.is_public === true,
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+
+  if (reelIds.length > 0) {
+    const { error: itemError } = await supabase
+      .from("reel_social_collection_items")
+      .insert(reelIds.map((reelId, index) => ({
+        collection_id: collection.id,
+        reel_id: reelId,
+        order_index: index,
+      })));
+    if (itemError) throw itemError;
+  }
+
+  return await socialSummary(profileId);
+}
+
+async function shareWithFriend(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const reelId = body.reel_id ? uuidText(body.reel_id, "Invalid reel_id") : null;
+  const collectionId = body.collection_id ? uuidText(body.collection_id, "Invalid collection_id") : null;
+  if (!reelId && !collectionId) throw new Error("Missing reel_id or collection_id");
+
+  const receiverHandle = body.receiver_handle ? normalizeHandle(textOrFallback(body.receiver_handle, "")) : null;
+  const receiverProfileId = body.receiver_profile_id ? uuidText(body.receiver_profile_id, "Invalid receiver_profile_id") : null;
+
+  await ensureSocialProfile(profileId);
+
+  const { error } = await supabase.from("reel_friend_shares").insert({
+    sender_profile_id: profileId,
+    receiver_profile_id: receiverProfileId,
+    receiver_handle: receiverHandle,
+    reel_id: reelId,
+    collection_id: collectionId,
+    message: textOrNull(body.message),
+  });
+  if (error) throw error;
+
+  if (reelId) {
+    await incrementPublicShareCount(reelId);
+  }
+
+  return await socialSummary(profileId);
+}
+
+async function refreshPublicSaveCount(reelId: string) {
+  const { count, error } = await supabase
+    .from("reel_bookmarks")
+    .select("*", { count: "exact", head: true })
+    .eq("reel_id", reelId);
+  if (error) throw error;
+
+  await supabase
+    .from("reel_public_shares")
+    .update({ save_count: count ?? 0 })
+    .eq("reel_id", reelId);
+}
+
+async function incrementPublicShareCount(reelId: string) {
+  const { data, error } = await supabase
+    .from("reel_public_shares")
+    .select("share_count")
+    .eq("reel_id", reelId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return;
+
+  await supabase
+    .from("reel_public_shares")
+    .update({ share_count: (numberValue(data.share_count) ?? 0) + 1 })
+    .eq("reel_id", reelId);
 }
 
 async function updateReelOCR(id: string, rawEntries: unknown) {
@@ -964,6 +1267,44 @@ function isInstagramPostURL(sourceUrl: string) {
   } catch {
     return false;
   }
+}
+
+function profileIdFromBody(body: Record<string, unknown>) {
+  return uuidText(body.profile_id, "Missing profile_id");
+}
+
+function uuidText(value: unknown, message: string) {
+  if (typeof value !== "string" || !/^[0-9a-fA-F-]{36}$/.test(value)) {
+    throw new Error(message);
+  }
+  return value;
+}
+
+function normalizeHandle(value: string) {
+  const handle = value
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9_ .-]/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 32);
+  return handle.length > 0 ? handle : `user-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function normalizeNicheTags(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map(normalizeNicheTag).filter((tag): tag is string => !!tag))).slice(0, 8);
+}
+
+function normalizeNicheTag(value: unknown) {
+  if (typeof value !== "string") return null;
+  const tag = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 32);
+  return tag.length > 0 ? tag : null;
 }
 
 function stringValue(value: unknown): string | null {
