@@ -88,6 +88,12 @@ Deno.serve(async (request) => {
       return json(await listProfileLibrary(profileId, url));
     }
 
+    if (request.method === "POST" && parts[parts.length - 1] === "gallery") {
+      const body = await request.json();
+      const profileId = uuidText(body.profile_id, "Missing profile_id");
+      return json(await importGalleryReel(body, profileId), 201);
+    }
+
     if (request.method === "POST") {
       const body = await request.json();
       const sourceUrl = normalizeReelUrl(body.url);
@@ -160,6 +166,22 @@ async function removeReelFromLibrary(id: string, profileId: string) {
     .eq("reel_id", id);
 
   if (error) throw error;
+
+  const { count, error: countError } = await supabase
+    .from("reel_profile_library")
+    .select("*", { count: "exact", head: true })
+    .eq("reel_id", id);
+
+  if (countError) throw countError;
+
+  if ((count ?? 0) === 0) {
+    await supabase.from("reel_public_shares").delete().eq("reel_id", id);
+    await supabase.from("reel_bookmarks").delete().eq("reel_id", id);
+    await supabase.from("reel_ocr_entries").delete().eq("reel_id", id);
+    await supabase.from("reel_segments").delete().eq("reel_id", id);
+    await supabase.from("reels").delete().eq("id", id);
+  }
+
   return { ok: true };
 }
 
@@ -665,7 +687,15 @@ async function incrementPublicShareCount(reelId: string) {
 }
 
 async function updateReelOCR(id: string, rawEntries: unknown) {
-  const entries = normalizeOCREntries(rawEntries);
+  const allEntries = normalizeOCREntries(rawEntries);
+  // Deduplicate: keep only the first entry per (timestamp, normalizedText) pair
+  const seen = new Set<string>();
+  const entries = allEntries.filter((entry) => {
+    const key = `${entry.timestamp_seconds}:${normalizeOCRText(entry.text)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
   await supabase.from("reel_ocr_entries").delete().eq("reel_id", id);
 
@@ -702,9 +732,13 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
 
   if (reelError) throw reelError;
 
+  // Collapse OCR entries to clean visual events before sending to LLM
+  const duration = clampInt(reel.duration_seconds, 60);
+  const collapsedEntries = expandOCRVisualEvents(entries, duration);
+
   const input = {
     ...reel,
-    ocr_entries: entries,
+    ocr_entries: collapsedEntries,
   } as NormalizedReel;
   const summary = await summarizeReel(input);
   const segments = normalizeSegments(summary.segments, input);
@@ -773,14 +807,19 @@ async function importReel(sourceUrl: string, profileId: string) {
   try {
     const source = detectSource(sourceUrl);
     const apifyItem = await runApify(sourceUrl, source);
+    const rawDuration = numberValue(apifyItem.videoDuration) ?? numberValue((apifyItem.videoMeta as Record<string, unknown>)?.duration);
+    if (source === "tiktok" && !apifyItem.isSlideshow && rawDuration !== null && rawDuration > 90) {
+      throw new Error("TikTok videos over 90 seconds are not supported.");
+    }
     const normalized = await normalizeApifyItem(sourceUrl, apifyItem);
     const summary = await summarizeReel(normalized);
 
-    const needsVisualOCR = hasVideoURL(normalized);
+    const needsVisualOCR = hasVideoURL(normalized) || (Array.isArray(normalized.media_items) && normalized.media_items.length > 0);
+    const { ocr_entries: _ocr, ...reelColumns } = normalized;
     const { data: reel, error: updateError } = await supabase
       .from("reels")
       .update({
-        ...normalized,
+        ...reelColumns,
         title: summary.title,
         category: summary.category,
         summary: summary.summary,
@@ -826,6 +865,32 @@ async function importReel(sourceUrl: string, profileId: string) {
       .eq("id", created.id);
     throw error;
   }
+}
+
+async function importGalleryReel(body: Record<string, unknown>, profileId: string) {
+  await ensureSocialProfile(profileId);
+  const videoUrl = typeof body.video_url === "string" && body.video_url.length > 0 ? body.video_url : null;
+  const title = textOrFallback(body.title, "My Reel");
+  const duration = numberValue(body.duration_seconds);
+
+  const { data: created, error } = await supabase
+    .from("reels")
+    .insert({
+      source: "gallery",
+      source_url: videoUrl ?? `gallery:${crypto.randomUUID()}`,
+      video_url: videoUrl,
+      title,
+      duration_seconds: duration,
+      status: videoUrl ? "ready_basic" : "ready",
+      category: "general",
+      summary: "",
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  await addReelToProfileLibrary(profileId, created.id);
+  return await getReel(created.id);
 }
 
 async function addReelToProfileLibrary(profileId: string, reelId: string) {
@@ -903,7 +968,7 @@ function apifyInputForSource(sourceUrl: string, source: string) {
       startUrls: [sourceUrl],
       resultsPerPage: 1,
       maxItems: 1,
-      shouldDownloadVideos: false,
+      shouldDownloadVideos: true,
       shouldDownloadCovers: false,
       shouldDownloadSlideshowImages: false,
       proxyConfiguration: { useApifyProxy: true },
@@ -927,10 +992,19 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
   const source = detectSource(sourceUrl);
   let transcript = extractTranscript(item);
   const mediaItems = extractMediaItems(item);
-  const videoUrl = extractVideoUrl(item, mediaItems);
+  const extractedVideoUrl = extractVideoUrl(item, mediaItems);
+  const isSlideshow = isLikelySlideshow(item, mediaItems);
+  const rawVideoUrl = isSlideshow ? null : (extractedVideoUrl ? withApifyToken(extractedVideoUrl) : null);
+  const reelIdForStorage = stringValue(item.id) ?? stringValue(item.shortCode) ?? stringValue(item.awemeId) ?? crypto.randomUUID();
+  const videoUrl = rawVideoUrl?.includes("api.apify.com")
+    ? await reuploadVideoToStorage(rawVideoUrl, reelIdForStorage)
+    : rawVideoUrl;
   const shouldTranscribeAudio = typeof videoUrl === "string" && videoUrl.length > 0;
   if (shouldTranscribeAudio && !hasTimestampedTranscript(transcript)) {
-    transcript = await transcribeAudioWithTimestamps(item) ?? transcript;
+    transcript = await transcribeAudioWithTimestamps(item).catch((error) => {
+      console.warn("Skipping timestamp transcription:", errorMessage(error));
+      return null;
+    }) ?? transcript;
   }
   const owner = objectValue(item.owner);
   const author = objectValue(item.authorMeta) ?? objectValue(item.author);
@@ -966,8 +1040,9 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "Return strict JSON with title, category, summary, and segments.",
       "Each segment must have start_seconds, end_seconds, title, description, raw_text, and tags.",
       "Use snake_case keys exactly. Segments must use integer seconds and should cover the reel in order.",
-      "When timestamped transcript items are provided, choose segment boundaries from those timestamps.",
-      "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context.",
+      "When timestamped transcript items are provided with meaningful speech content, prefer those timestamps for segment boundaries — audio changes are the primary signal.",
+      "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context to label and enrich segments.",
+      "Only use OCR text changes as primary segment boundaries when no timestamped transcript is available.",
       "When media_items are provided without video_url, treat the content as an image slideshow.",
       "For image slideshows, use the synthetic timestamps and any per-slide visual text to create replayable slide segments.",
       "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
@@ -1016,9 +1091,16 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
 
 function normalizeSegments(rawSegments: unknown[], input: NormalizedReel): Segment[] {
   const duration = clampInt(input.duration_seconds, 60);
+  const visualOCRSegments = hasVideoURL(input) && hasOCREntries(input.ocr_entries)
+    ? fallbackOCRSegments(input.ocr_entries, duration)
+    : [];
   const segments = rawSegments
     .map((rawSegment, index) => normalizeSegment(rawSegment, index, duration))
     .filter((segment) => segment.description.length > 0 || segment.raw_text);
+
+  if (visualOCRSegments.length >= 2) {
+    return visualOCRSegments;
+  }
 
   const hasUsefulDescriptions = segments.some((segment) => segment.description.length > 0);
   if (segments.length >= 2 && hasUsefulDescriptions) {
@@ -1128,15 +1210,39 @@ function fallbackOCRSegments(entries: OCREntry[], duration: number): Segment[] {
   });
 }
 
+function ocrKeysSameEvent(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // containment: one is a noisy superset of the other
+  if (a.includes(b) || b.includes(a)) return true;
+  // fuzzy: high character overlap (handles OCR misreads like "IMPARK GUELL" vs "PARK GUELL")
+  const longer = a.length >= b.length ? a : b;
+  const shorter = a.length < b.length ? a : b;
+  if (shorter.length < 4) return false;
+  let matches = 0;
+  for (const ch of shorter) {
+    if (longer.includes(ch)) matches++;
+  }
+  return matches / shorter.length >= 0.8;
+}
+
 function expandOCRVisualEvents(entries: OCREntry[], duration: number): OCREntry[] {
   const collapsed: OCREntry[] = [];
   let previousKey = "";
+  let previousTimestamp = -2;
+  const minGapSeconds = 1;
 
   for (const entry of entries) {
-    const key = normalizeOCRText(entry.text);
-    if (!key || key === previousKey) continue;
+    const meaningfulText = meaningfulOCRText(entry.text);
+    const key = normalizeOCRText(meaningfulText);
+    if (!key) continue;
+    // skip if same or content-equivalent to previous
+    if (ocrKeysSameEvent(key, previousKey)) continue;
+    // keep the hard time gap only as a safety net for very fast-changing videos
+    if (entry.timestamp_seconds - previousTimestamp < minGapSeconds) continue;
     previousKey = key;
-    collapsed.push({ ...entry, text: dedupeTexts(ocrTextLines(entry.text)).join("\n") || entry.text });
+    previousTimestamp = entry.timestamp_seconds;
+    collapsed.push({ ...entry, text: meaningfulText || dedupeTexts(ocrTextLines(entry.text)).join("\n") || entry.text });
   }
 
   const expanded: OCREntry[] = [];
@@ -1186,15 +1292,84 @@ function extractVideoUrl(item: Record<string, unknown>, mediaItems: MediaItem[])
     item.videoUrl,
     item.video_url,
     item.downloadedVideoUrl,
-    item.webVideoUrl,
     item.video,
     videoMeta?.downloadAddr,
     videoMeta?.playAddr,
     videoMeta?.url,
     ...mediaItems.filter((mediaItem) => mediaItem.type === "video").map((mediaItem) => mediaItem.url),
+    item.webVideoUrl,
   ];
 
-  return urls.map(stringValue).find((url) => !!url) ?? null;
+  return urls.map(stringValue).find((url) => !!url && isPlayableVideoURL(url)) ?? null;
+}
+
+function isPlayableVideoURL(url: string): boolean {
+  return /\.(mp4|mov|m3u8|webm|ts)(?:[?#].*)?$/i.test(url) ||
+    /\b(cdninstagram|tiktokcdn|fbcdn|scontent|akamaized|cloudfront)\b/.test(url) ||
+    url.includes("api.apify.com/v2/key-value-stores");
+}
+
+function withApifyToken(url: string): string {
+  if (!url.includes("api.apify.com/v2/key-value-stores")) return url;
+  return url.includes("?") ? `${url}&token=${apifyToken}` : `${url}?token=${apifyToken}`;
+}
+
+async function reuploadVideoToStorage(apifyUrl: string, reelId: string): Promise<string> {
+  const response = await fetch(apifyUrl);
+  if (!response.ok) return apifyUrl;
+
+  const blob = await response.blob();
+  const path = `${reelId}/video.mp4`;
+
+  const { error } = await supabase.storage
+    .from("reel-videos")
+    .upload(path, blob, { contentType: "video/mp4", upsert: true });
+
+  if (error) return apifyUrl;
+
+  const { data } = supabase.storage.from("reel-videos").getPublicUrl(path);
+  return data.publicUrl;
+}
+
+function isWebPageURL(url: string): boolean {
+  return /instagram\.com\/(p|reel|stories|tv)\//i.test(url) ||
+    /tiktok\.com\/@[^/]+\/video\//i.test(url) ||
+    /tiktok\.com\/t\//i.test(url);
+}
+
+function isLikelySlideshow(item: Record<string, unknown>, mediaItems: MediaItem[]) {
+  const explicitType = [
+    item.type,
+    item.mediaType,
+    item.media_type,
+    item.productType,
+    item.product_type,
+    item.awemeType,
+  ]
+    .map(stringValue)
+    .filter((value): value is string => !!value)
+    .join(" ")
+    .toLowerCase();
+
+  if (/\b(slideshow|carousel|photo|image)\b/.test(explicitType)) return true;
+
+  const imageCount = mediaItems.filter((item) => item.type === "image").length;
+  const videoCount = mediaItems.filter((item) => item.type === "video").length;
+  if (imageCount >= 2 && videoCount === 0) return true;
+
+  const knownSlideshowFields = [
+    item.images,
+    item.imageUrls,
+    item.image_urls,
+    item.slideshowImageLinks,
+    item.slideshowImages,
+    item.carouselMedia,
+    item.carousel_media,
+    item.childPosts,
+    item.children,
+  ];
+
+  return knownSlideshowFields.some((value) => Array.isArray(value) && value.length >= 2);
 }
 
 function extractThumbnailUrl(item: Record<string, unknown>, mediaItems: MediaItem[]) {
@@ -1220,25 +1395,30 @@ function extractMediaItems(item: Record<string, unknown>): MediaItem[] {
   const mediaItems: MediaItem[] = [];
   appendMediaItems(mediaItems, item.media_items);
   appendMediaItems(mediaItems, item.mediaItems);
-  appendMediaItems(mediaItems, item.images);
-  appendMediaItems(mediaItems, item.imageUrls);
-  appendMediaItems(mediaItems, item.image_urls);
   appendMediaItems(mediaItems, item.slideshowImageLinks);
   appendMediaItems(mediaItems, item.slideshowImages);
   appendMediaItems(mediaItems, item.carouselMedia);
   appendMediaItems(mediaItems, item.carousel_media);
   appendMediaItems(mediaItems, item.childPosts);
   appendMediaItems(mediaItems, item.children);
+  // Only fall back to flat image lists when no richer source populated items above
+  if (mediaItems.length === 0) {
+    appendMediaItems(mediaItems, item.images);
+    appendMediaItems(mediaItems, item.imageUrls);
+    appendMediaItems(mediaItems, item.image_urls);
+  }
 
-  const imagePostUrl = stringValue(item.displayUrl) ?? stringValue(item.imageUrl) ?? stringValue(item.image_url);
-  const hasVideo = !!(stringValue(item.videoUrl) ?? stringValue(item.video_url) ?? stringValue(item.webVideoUrl));
-  if (imagePostUrl && !hasVideo) {
-    mediaItems.push({
-      type: "image",
-      url: imagePostUrl,
-      thumbnail_url: imagePostUrl,
-      order_index: mediaItems.length,
-    });
+  if (mediaItems.length === 0) {
+    const imagePostUrl = stringValue(item.displayUrl) ?? stringValue(item.imageUrl) ?? stringValue(item.image_url);
+    const hasVideo = !!(stringValue(item.videoUrl) ?? stringValue(item.video_url));
+    if (imagePostUrl && !hasVideo) {
+      mediaItems.push({
+        type: "image",
+        url: imagePostUrl,
+        thumbnail_url: imagePostUrl,
+        order_index: 0,
+      });
+    }
   }
 
   return dedupeMediaItems(mediaItems);
@@ -1257,13 +1437,19 @@ function appendMediaItems(output: MediaItem[], value: unknown) {
     const item = objectValue(rawItem);
     if (!item) continue;
     const videoMeta = objectValue(item.videoMeta);
-    const url = stringValue(item.url) ??
+    const rawUrl = stringValue(item.url);
+    const explicitType = stringValue(item.type) ?? stringValue(item.mediaType) ?? stringValue(item.media_type);
+    const isVideoItem = explicitType?.toLowerCase().includes("video") ?? false;
+    const url = (rawUrl && !isWebPageURL(rawUrl) ? rawUrl : null) ??
       stringValue(item.src) ??
+      (isVideoItem ? (stringValue(item.videoUrl) ?? stringValue(item.video_url)) : null) ??
       stringValue(item.displayUrl) ??
       stringValue(item.imageUrl) ??
       stringValue(item.image_url) ??
       stringValue(item.videoUrl) ??
       stringValue(item.video_url) ??
+      stringValue(item.tiktokLink) ??
+      stringValue(item.downloadLink) ??
       stringValue(videoMeta?.downloadAddr) ??
       stringValue(videoMeta?.playAddr);
     if (!url) continue;
@@ -1274,9 +1460,8 @@ function appendMediaItems(output: MediaItem[], value: unknown) {
       stringValue(item.coverUrl) ??
       stringValue(videoMeta?.coverUrl) ??
       (inferMediaType(url) === "image" ? url : null);
-    const explicitType = stringValue(item.type) ?? stringValue(item.mediaType) ?? stringValue(item.media_type);
     output.push({
-      type: explicitType?.toLowerCase().includes("video") ? "video" : inferMediaType(url),
+      type: isVideoItem || explicitType?.toLowerCase().includes("video") ? "video" : inferMediaType(url),
       url,
       thumbnail_url: thumbnail,
       duration_seconds: numberValue(item.duration) ?? numberValue(item.durationSeconds) ?? numberValue(videoMeta?.duration),
@@ -1419,6 +1604,28 @@ function ocrTextLines(text: string): string[] {
     .map((line) => line.replace(/\s+/g, " ").trim())
     .filter((line) => line.length > 1)
     .filter((line) => !/^[^\p{L}\p{N}]+$/u.test(line));
+}
+
+function meaningfulOCRText(text: string): string {
+  return dedupeTexts(ocrTextLines(text))
+    .filter(isMeaningfulOCRLine)
+    .join("\n");
+}
+
+function isMeaningfulOCRLine(line: string): boolean {
+  const normalized = line.replace(/\s+/g, " ").trim();
+  const lowercased = normalized.toLowerCase();
+
+  if (!/\p{L}/u.test(normalized)) return false;
+  if (normalized.length < 3) return false;
+  if (/^@[\w.]{1,24}$/.test(normalized)) return false;
+  if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(normalized)) return false;
+  if (/^\d+([.,]\d+)?\s*(k|m|s|sec|secs|seconds|reps?)?$/i.test(normalized)) return false;
+  if (/^(like|likes|follow|share|save|comment|comments|reel|reels|instagram|tiktok)$/i.test(normalized)) return false;
+  if (/^(home|search|collections|profile|import reel|paste link)$/i.test(normalized)) return false;
+  if (lowercased.startsWith("http://") || lowercased.startsWith("https://")) return false;
+
+  return true;
 }
 
 function normalizeOCRText(text: string): string {

@@ -41,11 +41,22 @@ struct ReelService {
             URLQueryItem(name: "limit", value: String(limit)),
         ]
         var request = URLRequest(url: components?.url ?? self.baseURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         self.authorize(&request)
 
         let (data, response) = try await self.session.data(for: request)
         try self.validate(response: response, data: data)
         return try Self.decoder.decode(ReelListResponse.self, from: data).reels
+    }
+
+    func reel(id: UUID) async throws -> ReelItem {
+        var request = URLRequest(url: self.baseURL.appending(path: id.uuidString))
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
     }
 
     func importReel(url: URL, profileID: UUID) async throws -> ReelItem {
@@ -55,6 +66,63 @@ struct ReelService {
             "url": url.absoluteString,
             "profile_id": profileID.uuidString,
         ])
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        self.authorize(&request)
+
+        let (data, response) = try await self.session.data(for: request)
+        try self.validate(response: response, data: data)
+        return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
+    }
+
+    func uploadVideoToStorage(localURL: URL, fileName: String) async throws -> URL {
+        let supabaseURL = URL(string: ReelBackendConfig.supabaseURL)!
+        let uploadURL = supabaseURL
+            .appending(path: "storage/v1/object")
+            .appending(path: "reel-videos")
+            .appending(path: "gallery/\(fileName)")
+
+        let videoData = try Data(contentsOf: localURL)
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "POST"
+        request.setValue("video/mp4", forHTTPHeaderField: "Content-Type")
+        request.setValue(self.anonKey, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(self.anonKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = videoData
+
+        let (data, response) = try await self.session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw ServiceError.backend("Video upload failed")
+        }
+        _ = data
+
+        let publicURL = supabaseURL
+            .appending(path: "storage/v1/object/public")
+            .appending(path: "reel-videos")
+            .appending(path: "gallery/\(fileName)")
+        return publicURL
+    }
+
+    func importGalleryReel(videoURL: URL, title: String, durationSeconds: Int?, profileID: UUID) async throws -> ReelItem {
+        struct Body: Encodable {
+            let profileID: UUID
+            let videoURL: String
+            let title: String
+            let durationSeconds: Int?
+            enum CodingKeys: String, CodingKey {
+                case profileID = "profile_id"
+                case videoURL = "video_url"
+                case title
+                case durationSeconds = "duration_seconds"
+            }
+        }
+        var request = URLRequest(url: self.baseURL.appending(path: "gallery"))
+        request.httpMethod = "POST"
+        request.httpBody = try Self.encoder.encode(Body(
+            profileID: profileID,
+            videoURL: videoURL.absoluteString,
+            title: title,
+            durationSeconds: durationSeconds
+        ))
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         self.authorize(&request)
 
