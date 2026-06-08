@@ -9,12 +9,44 @@ struct ReelService {
         var errorDescription: String? {
             switch self {
                 case .missingConfig:
-                    "Missing Supabase URL or anon key. Run backend/scripts/generate-ios-reel-config.sh."
+                    "Could not connect to Reelplay servers. Please try again later."
                 case .invalidResponse:
-                    "The backend returned an invalid response."
+                    "Something went wrong on our end. Please try again."
                 case .backend(let message):
-                    message
+                    Self.friendlyMessage(for: message)
             }
+        }
+
+        private static func friendlyMessage(for raw: String) -> String {
+            let lower = raw.lowercased()
+            if lower.contains("pgrst204") || lower.contains("no content") {
+                return "Something went wrong while saving. Please try again."
+            }
+            if lower.contains("pgrst116") || lower.contains("contains 0 rows") {
+                return "That reel could not be found. It may have been deleted."
+            }
+            if lower.contains("pgrst301") || lower.contains("jwt") || lower.contains("unauthorized") {
+                return "Your session has expired. Please restart the app."
+            }
+            if lower.contains("tiktok videos over") || lower.contains("not supported") {
+                return raw
+            }
+            if lower.contains("timeout") || lower.contains("timed out") {
+                return "Processing took too long. Keep the app open and try again."
+            }
+            if lower.contains("rate limit") || lower.contains("429") || lower.contains("too many") {
+                return "Reelplay is busy right now. Please wait a moment and try again."
+            }
+            if lower.contains("network") || lower.contains("offline") || lower.contains("no internet") {
+                return "No internet connection. Check your connection and try again."
+            }
+            if lower.contains("http 5") || lower.contains("500") || lower.contains("503") {
+                return "Reelplay servers are having an issue. Please try again in a moment."
+            }
+            if lower.contains("invalid url") || lower.contains("unsupported") {
+                return "That link isn't supported. Try Instagram Reels or TikTok videos."
+            }
+            return "Something went wrong. Please try again."
         }
     }
 
@@ -60,7 +92,7 @@ struct ReelService {
     }
 
     func importReel(url: URL, profileID: UUID) async throws -> ReelItem {
-        var request = URLRequest(url: self.baseURL)
+        var request = URLRequest(url: self.baseURL, timeoutInterval: 300)
         request.httpMethod = "POST"
         request.httpBody = try JSONEncoder().encode([
             "url": url.absoluteString,
@@ -115,7 +147,7 @@ struct ReelService {
                 case durationSeconds = "duration_seconds"
             }
         }
-        var request = URLRequest(url: self.baseURL.appending(path: "gallery"))
+        var request = URLRequest(url: self.baseURL.appending(path: "gallery"), timeoutInterval: 300)
         request.httpMethod = "POST"
         request.httpBody = try Self.encoder.encode(Body(
             profileID: profileID,
@@ -257,6 +289,22 @@ struct ReelService {
                 receiverHandle: receiverHandle,
                 message: message
             ),
+            responseType: ReelSocialSummary.self
+        )
+    }
+
+    func deleteCollection(profileID: UUID, collectionID: UUID) async throws -> ReelSocialSummary {
+        try await self.postSocial(
+            action: "collections-delete",
+            body: SocialCollectionMutationRequest(profileID: profileID, collectionID: collectionID, name: nil),
+            responseType: ReelSocialSummary.self
+        )
+    }
+
+    func renameCollection(profileID: UUID, collectionID: UUID, name: String) async throws -> ReelSocialSummary {
+        try await self.postSocial(
+            action: "collections-rename",
+            body: SocialCollectionMutationRequest(profileID: profileID, collectionID: collectionID, name: name),
             responseType: ReelSocialSummary.self
         )
     }
@@ -426,6 +474,18 @@ private struct SocialCollectionRequest: Encodable {
         case name
         case reelIDs = "reel_ids"
         case isPublic = "is_public"
+    }
+}
+
+private struct SocialCollectionMutationRequest: Encodable {
+    let profileID: UUID
+    let collectionID: UUID
+    let name: String?
+
+    enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case collectionID = "collection_id"
+        case name
     }
 }
 

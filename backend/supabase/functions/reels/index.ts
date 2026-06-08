@@ -817,7 +817,7 @@ async function importReel(sourceUrl: string, profileId: string) {
 
     const needsVisualOCR = hasVideoURL(normalized) || (Array.isArray(normalized.media_items) && normalized.media_items.length > 0);
     const hasServerOCR = hasOCREntries(normalized.ocr_entries);
-    const { ocr_entries: _ocr, ...reelColumns } = normalized;
+    const { ocr_entries: _ocr, detected_language: _lang, ...reelColumns } = normalized;
     const { data: reel, error: updateError } = await supabase
       .from("reels")
       .update({
@@ -1025,22 +1025,32 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
   const shouldTranscribeAudio = typeof videoUrl === "string" && videoUrl.length > 0;
   const shouldRunVideoOCR = typeof videoUrl === "string" && videoUrl.length > 0 && !isSlideshow;
 
-  const [transcriptResult, videoOcrEntries] = await Promise.all([
-    shouldTranscribeAudio && !hasTimestampedTranscript(transcript)
-      ? transcribeAudioWithTimestamps(item).catch((error) => {
-          console.warn("Skipping timestamp transcription:", errorMessage(error));
-          return null;
-        })
-      : Promise.resolve(null),
-    shouldRunVideoOCR
-      ? runVideoIntelligenceOCR(videoUrl!, duration).catch((error) => {
-          console.warn("Skipping video OCR:", errorMessage(error));
-          return [] as OCREntry[];
-        })
-      : Promise.resolve([] as OCREntry[]),
-  ]);
+  // Run Whisper first so we can pass the detected language to Google Video Intelligence OCR
+  let detectedLanguage: string | null = null;
+  if (shouldTranscribeAudio && !hasTimestampedTranscript(transcript)) {
+    const transcriptResult = await transcribeAudioWithTimestamps(item).catch((error) => {
+      console.warn("Skipping timestamp transcription:", errorMessage(error));
+      return null;
+    });
+    if (transcriptResult !== null) {
+      transcript = transcriptResult.segments;
+      detectedLanguage = transcriptResult.language;
+      console.log(`Detected language: ${detectedLanguage ?? "unknown"}`);
+    }
+  }
 
-  if (transcriptResult !== null) transcript = transcriptResult;
+  // Build language hints from detected language — always include "en" as fallback for mixed-language content
+  const ocrLanguageHints = detectedLanguage && detectedLanguage !== "en"
+    ? [detectedLanguage, "en"]
+    : [];
+
+  const videoOcrEntries = shouldRunVideoOCR
+    ? await runVideoIntelligenceOCR(videoUrl!, duration, ocrLanguageHints).catch((error) => {
+        console.warn("Skipping video OCR:", errorMessage(error));
+        return [] as OCREntry[];
+      })
+    : [] as OCREntry[];
+
   const ocrEntries = videoOcrEntries.length > 0
     ? videoOcrEntries
     : (mediaItems.length > 0 && !videoUrl ? mediaItemsToOCREntries(mediaItems, caption) : undefined);
@@ -1058,10 +1068,16 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
     media_items: mediaItems,
     ocr_entries: ocrEntries,
     transcript,
+    detected_language: detectedLanguage,
   };
 }
 
 async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummary> {
+  const detectedLanguage = typeof input.detected_language === "string" ? input.detected_language : null;
+  const languageLine = detectedLanguage && detectedLanguage !== "en"
+    ? `The audio language was detected as "${detectedLanguage}". Transcript text may be in this language. Use the original language for raw_text; translate titles and descriptions to English.`
+    : "If transcript or caption is non-English, use the original language for raw_text and translate to English for title and description.";
+
   const prompt = {
     role: "user",
     content: [
@@ -1069,6 +1085,9 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "Return strict JSON with title, category, summary, and segments.",
       "Each segment must have start_seconds, end_seconds, title, description, raw_text, and tags.",
       "Use snake_case keys exactly. Segments must use integer seconds and should cover the reel in order.",
+      "IMPORTANT: Base every segment title and description strictly on evidence present in the transcript, ocr_entries, caption, or media_items. Do NOT invent, guess, or hallucinate segment names (e.g. do not generate generic workout steps like 'Warm Up', 'Push Ups', 'Cool Down' unless those exact words appear in the provided data).",
+      languageLine,
+      "If transcript and ocr_entries are both absent or empty, generate the minimum number of segments supportable by the caption or title alone. Do not fabricate content.",
       "When timestamped transcript items are provided with meaningful speech content, prefer those timestamps for segment boundaries — audio changes are the primary signal.",
       "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context to label and enrich segments.",
       "Only use OCR text changes as primary segment boundaries when no timestamped transcript is available.",
@@ -1705,7 +1724,12 @@ function normalizeOCRText(text: string): string {
     .trim();
 }
 
-async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Promise<TranscriptSegment[] | null> {
+type TranscriptionResult = {
+  segments: TranscriptSegment[];
+  language: string | null;
+};
+
+async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Promise<TranscriptionResult | null> {
   const audioUrl = stringValue(item.audioUrl) ?? extractVideoUrl(item, extractMediaItems(item));
   if (!audioUrl) return null;
 
@@ -1736,7 +1760,9 @@ async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Pro
   const transcription = await response.json();
   if (!Array.isArray(transcription.segments)) return null;
 
-  return transcription.segments
+  const detectedLanguage = typeof transcription.language === "string" ? transcription.language : null;
+
+  const segments = transcription.segments
     .map((rawSegment: unknown) => {
       const segment = objectValue(rawSegment);
       return {
@@ -1746,6 +1772,8 @@ async function transcribeAudioWithTimestamps(item: Record<string, unknown>): Pro
       };
     })
     .filter((segment: TranscriptSegment) => segment.text.length > 0 && segment.end > segment.start);
+
+  return { segments, language: detectedLanguage };
 }
 
 function extractTranscript(item: Record<string, unknown>) {
@@ -1867,7 +1895,7 @@ function errorMessage(error: unknown) {
   }
 }
 
-async function runVideoIntelligenceOCR(videoUrl: string, durationSeconds: number | null): Promise<OCREntry[]> {
+async function runVideoIntelligenceOCR(videoUrl: string, durationSeconds: number | null, languageHints: string[] = []): Promise<OCREntry[]> {
   if (!googleVideoIntelligenceApiKey) return [];
 
   const videoResponse = await fetch(videoUrl);
@@ -1880,16 +1908,20 @@ async function runVideoIntelligenceOCR(videoUrl: string, durationSeconds: number
     return [];
   }
 
+  const body: Record<string, unknown> = {
+    inputContent: arrayBufferToBase64(videoBuffer),
+    features: ["TEXT_DETECTION"],
+  };
+  if (languageHints.length > 0) {
+    body.videoContext = { textDetectionConfig: { languageHints } };
+  }
+
   const submitResponse = await fetch(
     `https://videointelligence.googleapis.com/v1/videos:annotate?key=${googleVideoIntelligenceApiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        inputContent: arrayBufferToBase64(videoBuffer),
-        features: ["TEXT_DETECTION"],
-        videoContext: { textDetectionConfig: { languageHints: ["en"] } },
-      }),
+      body: JSON.stringify(body),
     },
   );
 

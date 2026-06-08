@@ -6,10 +6,12 @@ final class ShareViewController: UIViewController {
     private let statusLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let openButton = UIButton()
+    private let continueButton = UIButton()
     private let activityView = UIActivityIndicatorView(style: .medium)
 
     private var barAnimationTimer: Timer?
     private var pendingLuvlyURL: URL?
+    private var sourceAppName: String?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -33,20 +35,31 @@ private extension ShareViewController {
         self.statusLabel.text = "Finding reel..."
         self.subtitleLabel.isHidden = true
         self.openButton.isHidden = true
+        self.continueButton.isHidden = true
     }
 
     @MainActor
-    func showReadyState(luvlyURL: URL) {
+    func showReadyState(luvlyURL: URL, originalURL: URL) {
         self.pendingLuvlyURL = luvlyURL
+        self.sourceAppName = Self.sourceName(from: originalURL)
 
         self.activityView.stopAnimating()
         self.activityView.isHidden = true
 
         UIView.animate(withDuration: 0.2) {
             self.statusLabel.text = "Reel queued"
-            self.subtitleLabel.text = "Close this sheet and open Reelplay to continue."
+            self.subtitleLabel.text = "Reelplay will process it as soon as you open the app."
             self.subtitleLabel.isHidden = false
             self.openButton.isHidden = false
+        }
+
+        if let name = self.sourceAppName {
+            var config = self.continueButton.configuration ?? UIButton.Configuration.plain()
+            config.title = "Continue in \(name)"
+            self.continueButton.configuration = config
+            UIView.animate(withDuration: 0.2) {
+                self.continueButton.isHidden = false
+            }
         }
 
         self.animatePlaceholderBars()
@@ -60,6 +73,7 @@ private extension ShareViewController {
         self.subtitleLabel.text = "Close and try again."
         self.subtitleLabel.isHidden = false
         self.openButton.isHidden = true
+        self.continueButton.isHidden = true
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             self.extensionContext?.completeRequest(returningItems: nil)
@@ -79,6 +93,14 @@ private extension ShareViewController {
             barIndex += 1
         }
     }
+
+    static func sourceName(from url: URL) -> String? {
+        let host = url.host(percentEncoded: false)?.lowercased() ?? ""
+        if host.contains("tiktok") { return "TikTok" }
+        if host.contains("instagram") { return "Instagram" }
+        if host.contains("youtube") { return "YouTube" }
+        return nil
+    }
 }
 
 // MARK: - URL Extraction
@@ -95,14 +117,14 @@ private extension ShareViewController {
                 if let url = await self.loadURL(from: provider),
                    Self.isSupportedReelURL(url),
                    let luvlyURL = Self.luvlyImportURL(for: url) {
-                    await self.showReadyState(luvlyURL: luvlyURL)
+                    await self.showReadyState(luvlyURL: luvlyURL, originalURL: url)
                     return
                 }
 
                 if let text = await self.loadText(from: provider),
                    let url = Self.extractSupportedURL(from: text),
                    let luvlyURL = Self.luvlyImportURL(for: url) {
-                    await self.showReadyState(luvlyURL: luvlyURL)
+                    await self.showReadyState(luvlyURL: luvlyURL, originalURL: url)
                     return
                 }
             }
@@ -168,11 +190,15 @@ private extension ShareViewController {
     }
 }
 
-// MARK: - Open in App
+// MARK: - Actions
 
 private extension ShareViewController {
     @objc func openButtonTapped() {
         self.openInApp()
+    }
+
+    @objc func continueButtonTapped() {
+        self.extensionContext?.completeRequest(returningItems: nil)
     }
 
     func openInApp() {
@@ -180,8 +206,6 @@ private extension ShareViewController {
             self.extensionContext?.completeRequest(returningItems: nil)
             return
         }
-        // Write to App Group UserDefaults so the main app picks it up on foreground
-        // even if extensionContext.open() is blocked by the host app (e.g. TikTok).
         UserDefaults(suiteName: "group.com.riskcreatives.luvly")?
             .set(url.absoluteString, forKey: "pendingImportURL")
         self.extensionContext?.open(url) { [weak self] _ in
@@ -244,19 +268,28 @@ private extension ShareViewController {
         self.subtitleLabel.numberOfLines = 0
         self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        // Open button
-        var config = UIButton.Configuration.filled()
-        config.title = "Open in Reelplay"
-        config.image = UIImage(systemName: "arrow.up.right.circle.fill")
-        config.imagePadding = 8
-        config.imagePlacement = .leading
-        config.baseBackgroundColor = .label
-        config.baseForegroundColor = .systemBackground
-        config.cornerStyle = .large
-        config.contentInsets = NSDirectionalEdgeInsets(top: 15, leading: 24, bottom: 15, trailing: 24)
-        self.openButton.configuration = config
+        // Primary CTA — Open in Reelplay
+        var openConfig = UIButton.Configuration.filled()
+        openConfig.title = "Open in Reelplay"
+        openConfig.image = UIImage(systemName: "arrow.up.right.circle.fill")
+        openConfig.imagePadding = 8
+        openConfig.imagePlacement = .leading
+        openConfig.baseBackgroundColor = .label
+        openConfig.baseForegroundColor = .systemBackground
+        openConfig.cornerStyle = .large
+        openConfig.contentInsets = NSDirectionalEdgeInsets(top: 15, leading: 24, bottom: 15, trailing: 24)
+        self.openButton.configuration = openConfig
         self.openButton.addTarget(self, action: #selector(self.openButtonTapped), for: .touchUpInside)
         self.openButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // Secondary — Continue in TikTok / Instagram (title set dynamically)
+        var continueConfig = UIButton.Configuration.plain()
+        continueConfig.title = "Continue in App"
+        continueConfig.baseForegroundColor = .secondaryLabel
+        continueConfig.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 20, bottom: 13, trailing: 20)
+        self.continueButton.configuration = continueConfig
+        self.continueButton.addTarget(self, action: #selector(self.continueButtonTapped), for: .touchUpInside)
+        self.continueButton.translatesAutoresizingMaskIntoConstraints = false
 
         // Stack it all
         let textStack = UIStackView(arrangedSubviews: [
@@ -271,10 +304,11 @@ private extension ShareViewController {
 
         let actionStack = UIStackView(arrangedSubviews: [
             self.openButton,
+            self.continueButton,
         ])
         actionStack.axis = .vertical
         actionStack.alignment = .center
-        actionStack.spacing = 10
+        actionStack.spacing = 4
         actionStack.translatesAutoresizingMaskIntoConstraints = false
 
         let root = UIStackView(arrangedSubviews: [card, textStack, actionStack])
