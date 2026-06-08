@@ -2,124 +2,148 @@ import UIKit
 import UniformTypeIdentifiers
 
 final class ShareViewController: UIViewController {
-    private let statusLabel = UILabel()
-    private let progressView = UIProgressView(progressViewStyle: .default)
     private let placeholderStack = UIStackView()
-    private var stageTimer: Timer?
-    private var currentStageIndex = 0
-    private let stages = [
-        "Reading reel",
-        "Transcribing audio",
-        "Finding key moments",
-        "Building microreels",
-    ]
+    private let statusLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let openButton = UIButton()
+    private let countdownLabel = UILabel()
+    private let activityView = UIActivityIndicatorView(style: .medium)
+
+    private var autoOpenTimer: Timer?
+    private var barAnimationTimer: Timer?
+    private var countdownRemaining = 2
+    private var pendingLuvlyURL: URL?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         self.configureView()
-        self.importSharedReel()
+        self.showFindingState()
+        Task { await self.extractAndPrepare() }
     }
 
     deinit {
-        self.stageTimer?.invalidate()
+        self.autoOpenTimer?.invalidate()
+        self.barAnimationTimer?.invalidate()
     }
 }
 
+// MARK: - Phases
+
 private extension ShareViewController {
-    func configureView() {
-        self.view.backgroundColor = .systemBackground
-        self.statusLabel.text = "Importing reel..."
-        self.statusLabel.font = .preferredFont(forTextStyle: .headline)
-        self.statusLabel.textAlignment = .center
-        self.statusLabel.numberOfLines = 0
-        self.statusLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        self.progressView.progress = 0.12
-        self.progressView.translatesAutoresizingMaskIntoConstraints = false
-
-        self.placeholderStack.axis = .vertical
-        self.placeholderStack.alignment = .center
-        self.placeholderStack.spacing = 8
-        self.placeholderStack.translatesAutoresizingMaskIntoConstraints = false
-
-        for index in 0..<5 {
-            let bar = UIView()
-            bar.backgroundColor = .secondaryLabel.withAlphaComponent(index == 0 ? 0.42 : 0.18)
-            bar.layer.cornerRadius = 4
-            bar.translatesAutoresizingMaskIntoConstraints = false
-            self.placeholderStack.addArrangedSubview(bar)
-
-            NSLayoutConstraint.activate([
-                bar.widthAnchor.constraint(equalToConstant: CGFloat(88 + (index * 20))),
-                bar.heightAnchor.constraint(equalToConstant: 8),
-            ])
-        }
-
-        let preview = UIView()
-        preview.backgroundColor = .secondarySystemBackground
-        preview.layer.cornerRadius = 14
-        preview.translatesAutoresizingMaskIntoConstraints = false
-        preview.addSubview(self.placeholderStack)
-
-        NSLayoutConstraint.activate([
-            preview.widthAnchor.constraint(equalToConstant: 190),
-            preview.heightAnchor.constraint(equalToConstant: 300),
-            self.placeholderStack.centerXAnchor.constraint(equalTo: preview.centerXAnchor),
-            self.placeholderStack.centerYAnchor.constraint(equalTo: preview.centerYAnchor),
-        ])
-
-        let stack = UIStackView(arrangedSubviews: [preview, self.statusLabel, self.progressView])
-        stack.axis = .vertical
-        stack.alignment = .center
-        stack.spacing = 18
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        self.view.addSubview(stack)
-
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: self.view.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: self.view.centerYAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: self.view.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: self.view.trailingAnchor, constant: -24),
-            self.statusLabel.widthAnchor.constraint(lessThanOrEqualTo: self.view.widthAnchor, constant: -48),
-            self.progressView.widthAnchor.constraint(equalToConstant: 220),
-        ])
+    @MainActor
+    func showFindingState() {
+        self.activityView.startAnimating()
+        self.activityView.isHidden = false
+        self.statusLabel.text = "Finding reel..."
+        self.subtitleLabel.isHidden = true
+        self.openButton.isHidden = true
+        self.countdownLabel.isHidden = true
     }
 
-    func importSharedReel() {
+    @MainActor
+    func showReadyState(luvlyURL: URL) {
+        self.pendingLuvlyURL = luvlyURL
+
+        self.activityView.stopAnimating()
+        self.activityView.isHidden = true
+
+        UIView.animate(withDuration: 0.2) {
+            self.statusLabel.text = "Open in Luvly"
+            self.subtitleLabel.text = "Loading with full progress view inside the app."
+            self.subtitleLabel.isHidden = false
+            self.openButton.isHidden = false
+        }
+
+        self.animatePlaceholderBars()
+        self.startCountdown()
+    }
+
+    @MainActor
+    func showErrorState(_ message: String) {
+        self.activityView.stopAnimating()
+        self.activityView.isHidden = true
+        self.statusLabel.text = message
+        self.subtitleLabel.text = "Close and try again."
+        self.subtitleLabel.isHidden = false
+        self.openButton.isHidden = true
+        self.countdownLabel.isHidden = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.extensionContext?.completeRequest(returningItems: nil)
+        }
+    }
+
+    func startCountdown() {
+        self.countdownRemaining = 2
+        self.updateCountdownLabel()
+        self.countdownLabel.isHidden = false
+
+        self.autoOpenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self else { return }
+            self.countdownRemaining -= 1
+            if self.countdownRemaining <= 0 {
+                timer.invalidate()
+                self.openInApp()
+            } else {
+                self.updateCountdownLabel()
+            }
+        }
+    }
+
+    @MainActor
+    func updateCountdownLabel() {
+        self.countdownLabel.text = "Opening automatically in \(self.countdownRemaining)s"
+    }
+
+    func animatePlaceholderBars() {
+        var barIndex = 0
+        self.barAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            for (index, view) in self.placeholderStack.arrangedSubviews.enumerated() {
+                UIView.animate(withDuration: 0.3) {
+                    view.backgroundColor = .secondaryLabel.withAlphaComponent(index == barIndex % 5 ? 0.52 : 0.16)
+                    view.transform = index == barIndex % 5 ? CGAffineTransform(scaleX: 1.1, y: 1) : .identity
+                }
+            }
+            barIndex += 1
+        }
+    }
+}
+
+// MARK: - URL Extraction
+
+private extension ShareViewController {
+    func extractAndPrepare() async {
         guard let extensionItems = self.extensionContext?.inputItems as? [NSExtensionItem] else {
-            self.finishWithMessage("No shared content found.")
+            await self.showErrorState("No shared content found.")
             return
         }
 
-        Task {
-            for item in extensionItems {
-                for provider in item.attachments ?? [] {
-                    if let url = await self.loadURL(from: provider),
-                       Self.isSupportedReelURL(url) {
-                        await self.importReel(url)
-                        return
-                    }
+        for item in extensionItems {
+            for provider in item.attachments ?? [] {
+                if let url = await self.loadURL(from: provider),
+                   Self.isSupportedReelURL(url),
+                   let luvlyURL = Self.luvlyImportURL(for: url) {
+                    await self.showReadyState(luvlyURL: luvlyURL)
+                    return
+                }
 
-                    if let text = await self.loadText(from: provider),
-                       let url = Self.extractSupportedURL(from: text) {
-                        await self.importReel(url)
-                        return
-                    }
+                if let text = await self.loadText(from: provider),
+                   let url = Self.extractSupportedURL(from: text),
+                   let luvlyURL = Self.luvlyImportURL(for: url) {
+                    await self.showReadyState(luvlyURL: luvlyURL)
+                    return
                 }
             }
-
-            await MainActor.run {
-                self.finishWithMessage("Share an Instagram or TikTok reel URL.")
-            }
         }
+
+        await self.showErrorState("Share an Instagram or TikTok reel link.")
     }
 
     func loadURL(from provider: NSItemProvider) async -> URL? {
         guard provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) else {
             return nil
         }
-
         return await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.url.identifier, options: nil) { item, _ in
                 if let url = item as? URL {
@@ -128,8 +152,7 @@ private extension ShareViewController {
                           let text = String(data: data, encoding: .utf8),
                           let url = URL(string: text) {
                     continuation.resume(returning: url)
-                } else if let text = item as? String,
-                          let url = URL(string: text) {
+                } else if let text = item as? String, let url = URL(string: text) {
                     continuation.resume(returning: url)
                 } else {
                     continuation.resume(returning: nil)
@@ -142,7 +165,6 @@ private extension ShareViewController {
         guard provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) else {
             return nil
         }
-
         return await withCheckedContinuation { continuation in
             provider.loadItem(forTypeIdentifier: UTType.text.identifier, options: nil) { item, _ in
                 if let text = item as? String {
@@ -156,142 +178,154 @@ private extension ShareViewController {
         }
     }
 
-    @MainActor
-    func updateStatus(_ message: String) {
-        self.statusLabel.text = message
-    }
-
-    func importReel(_ url: URL) async {
-        await self.startImportAnimation()
-
-        do {
-            try await Self.importReelThroughBackend(url)
-            await MainActor.run {
-                self.stopImportAnimation()
-                self.finishWithMessage("Reel imported. Open LockInNote to view it.")
-            }
-        } catch {
-            await MainActor.run {
-                self.stopImportAnimation()
-                self.finishWithMessage(error.localizedDescription)
-            }
-        }
-    }
-
-    @MainActor
-    func startImportAnimation() {
-        self.currentStageIndex = 0
-        self.updateStageUI()
-        self.stageTimer?.invalidate()
-        self.stageTimer = Timer.scheduledTimer(withTimeInterval: 2.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.currentStageIndex = min(self.currentStageIndex + 1, self.stages.count - 1)
-            self.updateStageUI()
-        }
-    }
-
-    @MainActor
-    func stopImportAnimation() {
-        self.stageTimer?.invalidate()
-        self.stageTimer = nil
-        self.progressView.setProgress(1, animated: true)
-    }
-
-    @MainActor
-    func updateStageUI() {
-        self.statusLabel.text = self.stages[self.currentStageIndex]
-        let progress = Float(self.currentStageIndex + 1) / Float(self.stages.count + 1)
-        self.progressView.setProgress(progress, animated: true)
-
-        for (index, view) in self.placeholderStack.arrangedSubviews.enumerated() {
-            UIView.animate(withDuration: 0.35) {
-                view.backgroundColor = .secondaryLabel.withAlphaComponent(index == self.currentStageIndex % 5 ? 0.48 : 0.16)
-                view.transform = index == self.currentStageIndex % 5 ? CGAffineTransform(scaleX: 1.08, y: 1) : .identity
-            }
-        }
-    }
-
-    @MainActor
-    func finishWithMessage(_ message: String) {
-        self.statusLabel.text = message
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            self.extensionContext?.completeRequest(returningItems: nil)
-        }
-    }
-
     static func extractSupportedURL(from text: String) -> URL? {
         let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         let matches = detector?.matches(in: text, options: [], range: range) ?? []
-
-        return matches
-            .compactMap(\.url)
-            .first(where: Self.isSupportedReelURL)
+        return matches.compactMap(\.url).first(where: Self.isSupportedReelURL)
     }
 
     static func isSupportedReelURL(_ url: URL) -> Bool {
-        guard let host = url.host(percentEncoded: false)?.lowercased() else {
-            return false
-        }
-
+        guard let host = url.host(percentEncoded: false)?.lowercased() else { return false }
         return host.contains("instagram.com") || host.contains("tiktok.com")
     }
 
-    static func importReelThroughBackend(_ reelURL: URL) async throws {
-        guard let endpoint = URL(string: ReelBackendConfig.supabaseURL)?
-            .appending(path: "functions/v1/reels") else {
-            throw ImportError.missingConfig
+    static func luvlyImportURL(for reelURL: URL) -> URL? {
+        guard var components = URLComponents(string: "luvly://import-reel") else { return nil }
+        components.queryItems = [URLQueryItem(name: "url", value: reelURL.absoluteString)]
+        return components.url
+    }
+}
+
+// MARK: - Open in App
+
+private extension ShareViewController {
+    @objc func openButtonTapped() {
+        self.autoOpenTimer?.invalidate()
+        self.autoOpenTimer = nil
+        self.openInApp()
+    }
+
+    func openInApp() {
+        guard let url = self.pendingLuvlyURL else {
+            self.extensionContext?.completeRequest(returningItems: nil)
+            return
+        }
+        self.extensionContext?.open(url) { [weak self] _ in
+            self?.extensionContext?.completeRequest(returningItems: nil)
+        }
+    }
+}
+
+// MARK: - View Setup
+
+private extension ShareViewController {
+    func configureView() {
+        self.view.backgroundColor = .systemBackground
+
+        // Placeholder card
+        for index in 0..<5 {
+            let bar = UIView()
+            bar.backgroundColor = .secondaryLabel.withAlphaComponent(index == 0 ? 0.42 : 0.18)
+            bar.layer.cornerRadius = 4
+            bar.translatesAutoresizingMaskIntoConstraints = false
+            self.placeholderStack.addArrangedSubview(bar)
+            NSLayoutConstraint.activate([
+                bar.widthAnchor.constraint(equalToConstant: CGFloat(88 + (index * 18))),
+                bar.heightAnchor.constraint(equalToConstant: 8),
+            ])
         }
 
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(ReelBackendConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
-        request.setValue("Bearer \(ReelBackendConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONEncoder().encode([
-            "url": reelURL.absoluteString,
-            "profile_id": Self.defaultSocialProfileID.uuidString,
+        self.placeholderStack.axis = .vertical
+        self.placeholderStack.alignment = .center
+        self.placeholderStack.spacing = 10
+        self.placeholderStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let card = UIView()
+        card.backgroundColor = .secondarySystemBackground
+        card.layer.cornerRadius = 16
+        card.layer.cornerCurve = .continuous
+        card.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(self.placeholderStack)
+
+        NSLayoutConstraint.activate([
+            card.widthAnchor.constraint(equalToConstant: 180),
+            card.heightAnchor.constraint(equalToConstant: 280),
+            self.placeholderStack.centerXAnchor.constraint(equalTo: card.centerXAnchor),
+            self.placeholderStack.centerYAnchor.constraint(equalTo: card.centerYAnchor),
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
-            if let backendError = try? JSONDecoder().decode(BackendError.self, from: data) {
-                throw ImportError.backend(backendError.error)
-            }
+        // Activity indicator
+        self.activityView.color = .label
+        self.activityView.translatesAutoresizingMaskIntoConstraints = false
 
-            throw ImportError.backend("Import failed.")
-        }
-    }
+        // Labels
+        self.statusLabel.font = UIFont.systemFont(ofSize: 17, weight: .bold)
+        self.statusLabel.textAlignment = .center
+        self.statusLabel.numberOfLines = 0
+        self.statusLabel.translatesAutoresizingMaskIntoConstraints = false
 
-    static var defaultSocialProfileID: UUID {
-        let defaults = UserDefaults.standard
-        let key = "reelplay.socialProfileID"
-        if let storedValue = defaults.string(forKey: key),
-           let storedID = UUID(uuidString: storedValue) {
-            return storedID
-        }
+        self.subtitleLabel.font = UIFont.preferredFont(forTextStyle: .footnote)
+        self.subtitleLabel.textColor = .secondaryLabel
+        self.subtitleLabel.textAlignment = .center
+        self.subtitleLabel.numberOfLines = 0
+        self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        let profileID = UIDevice.current.identifierForVendor ?? UUID()
-        defaults.set(profileID.uuidString, forKey: key)
-        return profileID
-    }
-}
+        // Open button
+        var config = UIButton.Configuration.filled()
+        config.title = "Open in Reelplay"
+        config.image = UIImage(systemName: "arrow.up.right.circle.fill")
+        config.imagePadding = 8
+        config.imagePlacement = .leading
+        config.baseBackgroundColor = .label
+        config.baseForegroundColor = .systemBackground
+        config.cornerStyle = .large
+        config.contentInsets = NSDirectionalEdgeInsets(top: 15, leading: 24, bottom: 15, trailing: 24)
+        self.openButton.configuration = config
+        self.openButton.addTarget(self, action: #selector(self.openButtonTapped), for: .touchUpInside)
+        self.openButton.translatesAutoresizingMaskIntoConstraints = false
 
-private struct BackendError: Decodable {
-    let error: String
-}
+        // Countdown
+        self.countdownLabel.font = UIFont.preferredFont(forTextStyle: .caption1)
+        self.countdownLabel.textColor = .tertiaryLabel
+        self.countdownLabel.textAlignment = .center
+        self.countdownLabel.translatesAutoresizingMaskIntoConstraints = false
 
-private enum ImportError: LocalizedError {
-    case missingConfig
-    case backend(String)
+        // Stack it all
+        let textStack = UIStackView(arrangedSubviews: [
+            self.activityView,
+            self.statusLabel,
+            self.subtitleLabel,
+        ])
+        textStack.axis = .vertical
+        textStack.alignment = .center
+        textStack.spacing = 6
+        textStack.translatesAutoresizingMaskIntoConstraints = false
 
-    var errorDescription: String? {
-        switch self {
-            case .missingConfig:
-                "Missing backend config."
-            case .backend(let message):
-                message
-        }
+        let actionStack = UIStackView(arrangedSubviews: [
+            self.openButton,
+            self.countdownLabel,
+        ])
+        actionStack.axis = .vertical
+        actionStack.alignment = .center
+        actionStack.spacing = 10
+        actionStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = UIStackView(arrangedSubviews: [card, textStack, actionStack])
+        root.axis = .vertical
+        root.alignment = .center
+        root.spacing = 20
+        root.setCustomSpacing(24, after: textStack)
+        root.translatesAutoresizingMaskIntoConstraints = false
+
+        self.view.addSubview(root)
+
+        NSLayoutConstraint.activate([
+            root.centerXAnchor.constraint(equalTo: self.view.centerXAnchor),
+            root.centerYAnchor.constraint(equalTo: self.view.centerYAnchor),
+            root.leadingAnchor.constraint(greaterThanOrEqualTo: self.view.leadingAnchor, constant: 28),
+            root.trailingAnchor.constraint(lessThanOrEqualTo: self.view.trailingAnchor, constant: -28),
+            self.subtitleLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 260),
+        ])
     }
 }

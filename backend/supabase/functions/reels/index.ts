@@ -1048,7 +1048,7 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
       "If on-screen text changes over time, each meaningful text change should usually become its own segment.",
       "For workout/list reels, split visible exercise or step lines into separate replayable segments when possible.",
-      "Return 4 to 8 high-signal segments. Do not return null values.",
+      "Return one segment per distinct visual state for list/place/item content (up to 20). For narrative or instructional content, return 4 to 8 high-signal segments. Do not return null values.",
       JSON.stringify(input),
     ].join("\n\n"),
   };
@@ -1091,17 +1091,11 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
 
 function normalizeSegments(rawSegments: unknown[], input: NormalizedReel): Segment[] {
   const duration = clampInt(input.duration_seconds, 60);
-  const visualOCRSegments = hasVideoURL(input) && hasOCREntries(input.ocr_entries)
-    ? fallbackOCRSegments(input.ocr_entries, duration)
-    : [];
   const segments = rawSegments
     .map((rawSegment, index) => normalizeSegment(rawSegment, index, duration))
     .filter((segment) => segment.description.length > 0 || segment.raw_text);
 
-  if (visualOCRSegments.length >= 2) {
-    return visualOCRSegments;
-  }
-
+  // LLM is authoritative. fallbackSegments (which calls fallbackOCRSegments) is the true fallback.
   const hasUsefulDescriptions = segments.some((segment) => segment.description.length > 0);
   if (segments.length >= 2 && hasUsefulDescriptions) {
     return segments;
@@ -1210,55 +1204,100 @@ function fallbackOCRSegments(entries: OCREntry[], duration: number): Segment[] {
   });
 }
 
+function levenshteinSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const la = a.length, lb = b.length;
+  if (la === 0 || lb === 0) return 0;
+  const prev = Array.from({ length: lb + 1 }, (_, i) => i);
+  const curr = new Array<number>(lb + 1);
+  for (let i = 1; i <= la; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    prev.splice(0, prev.length, ...curr);
+  }
+  return 1 - prev[lb] / Math.max(la, lb);
+}
+
 function ocrKeysSameEvent(a: string, b: string): boolean {
   if (!a || !b) return false;
   if (a === b) return true;
-  // containment: one is a noisy superset of the other
+  // containment: one is a noisy superset of the other (e.g. "L11 SAGRADA FAMILIA" ⊇ "SAGRADA FAMILIA")
   if (a.includes(b) || b.includes(a)) return true;
-  // fuzzy: high character overlap (handles OCR misreads like "IMPARK GUELL" vs "PARK GUELL")
-  const longer = a.length >= b.length ? a : b;
-  const shorter = a.length < b.length ? a : b;
-  if (shorter.length < 4) return false;
-  let matches = 0;
-  for (const ch of shorter) {
-    if (longer.includes(ch)) matches++;
-  }
-  return matches / shorter.length >= 0.8;
+  if (Math.min(a.length, b.length) < 4) return false;
+  // edit-distance similarity — handles OCR misreads like "IMPARK GUELL" vs "PARK GUELL"
+  return levenshteinSimilarity(a, b) >= 0.75;
 }
 
 function expandOCRVisualEvents(entries: OCREntry[], duration: number): OCREntry[] {
-  const collapsed: OCREntry[] = [];
-  let previousKey = "";
-  let previousTimestamp = -2;
-  const minGapSeconds = 1;
+  if (entries.length === 0) return [];
 
+  // Group consecutive entries into runs — maximal sequences of similar visual content.
+  // Transition frame artifacts (partial/garbled text mid-animation) appear in exactly 1 sample
+  // at 0.5s sampling; real text states appear in ≥2 consecutive samples.
+  const runs: { entries: OCREntry[]; key: string }[] = [];
   for (const entry of entries) {
     const meaningfulText = meaningfulOCRText(entry.text);
     const key = normalizeOCRText(meaningfulText);
     if (!key) continue;
-    // skip if same or content-equivalent to previous
-    if (ocrKeysSameEvent(key, previousKey)) continue;
-    // keep the hard time gap only as a safety net for very fast-changing videos
-    if (entry.timestamp_seconds - previousTimestamp < minGapSeconds) continue;
-    previousKey = key;
-    previousTimestamp = entry.timestamp_seconds;
-    collapsed.push({ ...entry, text: meaningfulText || dedupeTexts(ocrTextLines(entry.text)).join("\n") || entry.text });
+    const lastRun = runs[runs.length - 1];
+    if (lastRun && ocrKeysSameEvent(key, lastRun.key)) {
+      lastRun.entries.push(entry);
+    } else {
+      runs.push({ entries: [entry], key });
+    }
   }
 
-  const expanded: OCREntry[] = [];
-  for (const entry of collapsed) {
-    const lines = ocrTextLines(entry.text);
-    const shouldSplitLines = collapsed.length <= 2 && lines.length >= 2;
+  // Require ≥2 consecutive samples OR be a distinct entry to survive.
+  // 1-sample runs that are content-similar to either adjacent run are transition artifacts
+  // (partial/garbled reads mid-animation) — kill those only.
+  // 1-sample runs that are distinct from both neighbors are real brief content — keep.
+  const stableRuns = runs.filter((run, index) => {
+    if (run.entries.length >= 2) return true;
+    if (index === 0 || index === runs.length - 1) return true;
+    const prevKey = runs[index - 1]?.key ?? "";
+    const nextKey = runs[index + 1]?.key ?? "";
+    return !ocrKeysSameEvent(run.key, prevKey) && !ocrKeysSameEvent(run.key, nextKey);
+  });
 
+  if (stableRuns.length === 0) return entries;
+
+  // Per run: pick canonical entry by highest confidence, then shortest normalized text (least OCR noise).
+  const collapsed = stableRuns.map((run) => {
+    const best = run.entries.reduce((bestEntry, e) => {
+      const eConf = e.confidence ?? -1;
+      const bestConf = bestEntry.confidence ?? -1;
+      if (eConf > bestConf) return e;
+      if (eConf === bestConf) {
+        return normalizeOCRText(e.text).length < normalizeOCRText(bestEntry.text).length ? e : bestEntry;
+      }
+      return bestEntry;
+    });
+    const meaningfulText = meaningfulOCRText(best.text);
+    return { ...best, text: meaningfulText || best.text };
+  });
+
+  // Remove adjacent duplicates that survived canonical selection.
+  const deduped = collapsed.filter((entry, index) => {
+    if (index === 0) return true;
+    return !ocrKeysSameEvent(normalizeOCRText(entry.text), normalizeOCRText(collapsed[index - 1].text));
+  });
+
+  // Expand multi-line entries for carousels/slideshows (existing behaviour).
+  const expanded: OCREntry[] = [];
+  for (const entry of deduped) {
+    const lines = ocrTextLines(entry.text);
+    const shouldSplitLines = deduped.length <= 2 && lines.length >= 2;
     if (!shouldSplitLines) {
       expanded.push({ ...entry, text: lines.join(" ") || entry.text });
       continue;
     }
-
-    lines.slice(0, 8).forEach((line, index) => {
+    lines.slice(0, 8).forEach((line, lineIndex) => {
       expanded.push({
         ...entry,
-        timestamp_seconds: Math.min(duration - 1, entry.timestamp_seconds + index),
+        timestamp_seconds: Math.min(duration - 1, entry.timestamp_seconds + lineIndex),
         text: line,
       });
     });

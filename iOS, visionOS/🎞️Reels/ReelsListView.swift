@@ -7492,7 +7492,7 @@ private struct ReelOCRProcessor {
             : Double(candidates.map(\.confidence).reduce(0, +) / Float(candidates.count))
 
         return ReelOCREntry(
-            timestampSeconds: Int(floor(timestamp)),
+            timestampSeconds: Int(timestamp.rounded()),
             text: lines.joined(separator: "\n"),
             confidence: confidence
         )
