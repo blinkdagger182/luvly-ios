@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var app: 📱AppModel
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         ReelplayRootView()
         .modifier(💁OnBoardingHandle())
@@ -20,6 +21,9 @@ struct ContentView: View {
             💁HowToOnBoarding()
         }
         .onOpenURL { self.app.handle($0) }
+        .onChange(of: self.scenePhase) { _, phase in
+            if phase == .active { self.app.drainPendingImportURL() }
+        }
         .modifier(💬RequestUserReview())
         .modifier(🪧ReloadWidgetsOnActive())
         .environmentObject(self.app.inAppPurchaseModel)

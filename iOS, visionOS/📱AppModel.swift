@@ -61,6 +61,17 @@ extension 📱AppModel {
         return host.contains("instagram.com") || host.contains("tiktok.com")
     }
 
+    func drainPendingImportURL() {
+        let defaults = UserDefaults(suiteName: "group.com.riskcreatives.luvly")
+        guard let raw = defaults?.string(forKey: "pendingImportURL"),
+              let luvlyURL = URL(string: raw),
+              let reelURL = Self.decodeSharedReelURL(luvlyURL) else { return }
+        defaults?.removeObject(forKey: "pendingImportURL")
+        self.sharedReelURL = reelURL
+        self.tab = .reels
+        💥Feedback.light()
+    }
+
     static func decodeSharedReelURL(_ url: URL) -> URL? {
         guard url.scheme == "luvly",
               url.host(percentEncoded: false) == "import-reel",

@@ -693,6 +693,7 @@
 		1DF9F7642E652FAE00DB9E09 /* 🎚️DoubleSizeOnLargeWidgetMenuLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🎚️DoubleSizeOnLargeWidgetMenuLink.swift"; sourceTree = "<group>"; };
 		71A878AE0B0ED97E38E7A819 /* LockInNoteShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LockInNoteShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		7BFBCFEB802B07B38A1A74DC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		DEADBEEF1234567890ABCDEF /* Share Extension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Share Extension.entitlements"; sourceTree = "<group>"; };
 		821D14EAF2BB4A3A904838AE /* ReelBackendConfig.generated.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelBackendConfig.generated.swift; sourceTree = "<group>"; };
 		AD55FD8BA7CC12FCB03A7238 /* ReelsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelsListView.swift; sourceTree = "<group>"; };
 		B1B96BC25927087FDE588DF6 /* ReelModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelModels.swift; sourceTree = "<group>"; };
@@ -1210,6 +1211,7 @@
 			children = (
 				EF37847E25C92CB530AA3ED7 /* ShareViewController.swift */,
 				7BFBCFEB802B07B38A1A74DC /* Info.plist */,
+				DEADBEEF1234567890ABCDEF /* Share Extension.entitlements */,
 			);
 			path = "Share Extension";
 			sourceTree = "<group>";
@@ -1935,6 +1937,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Share Extension/Share Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 8H5C9P92ZB;
@@ -1962,6 +1965,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Share Extension/Share Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 22;
 				DEVELOPMENT_TEAM = 8H5C9P92ZB;

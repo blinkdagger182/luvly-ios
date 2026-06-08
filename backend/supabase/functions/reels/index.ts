@@ -59,6 +59,7 @@ const apifyActorId = Deno.env.get("APIFY_INSTAGRAM_REEL_ACTOR_ID") ?? "xMc5Ga1oC
 const apifyTikTokActorId = Deno.env.get("APIFY_TIKTOK_ACTOR_ID") ?? "clockworks/tiktok-scraper";
 const apifyInstagramPostActorId = Deno.env.get("APIFY_INSTAGRAM_POST_ACTOR_ID") ?? "apify/instagram-scraper";
 const openAIModel = Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
+const googleVideoIntelligenceApiKey = Deno.env.get("GOOGLE_VIDEO_INTELLIGENCE_API_KEY") ?? "";
 
 const supabase = createClient(supabaseUrl, serviceRoleKey);
 
@@ -815,6 +816,7 @@ async function importReel(sourceUrl: string, profileId: string) {
     const summary = await summarizeReel(normalized);
 
     const needsVisualOCR = hasVideoURL(normalized) || (Array.isArray(normalized.media_items) && normalized.media_items.length > 0);
+    const hasServerOCR = hasOCREntries(normalized.ocr_entries);
     const { ocr_entries: _ocr, ...reelColumns } = normalized;
     const { data: reel, error: updateError } = await supabase
       .from("reels")
@@ -824,7 +826,7 @@ async function importReel(sourceUrl: string, profileId: string) {
         category: summary.category,
         summary: summary.summary,
         raw_payload: apifyItem,
-        status: needsVisualOCR ? "ready_basic" : "ready",
+        status: needsVisualOCR && !hasServerOCR ? "ready_basic" : "ready",
       })
       .eq("id", created.id)
       .select()
@@ -851,6 +853,18 @@ async function importReel(sourceUrl: string, profileId: string) {
         .from("reel_segments")
         .upsert(segmentRows, { onConflict: "reel_id,order_index" });
       if (segmentError) throw segmentError;
+    }
+
+    if (hasServerOCR && Array.isArray(normalized.ocr_entries) && normalized.ocr_entries.length > 0) {
+      const { error: ocrError } = await supabase.from("reel_ocr_entries").insert(
+        normalized.ocr_entries.map((entry) => ({
+          reel_id: created.id,
+          timestamp_seconds: entry.timestamp_seconds,
+          text: entry.text,
+          confidence: entry.confidence ?? null,
+        })),
+      );
+      if (ocrError) console.warn("Failed to store server OCR entries:", ocrError.message);
     }
 
     await addReelToProfileLibrary(profileId, reel.id);
@@ -999,13 +1013,6 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
   const videoUrl = rawVideoUrl?.includes("api.apify.com")
     ? await reuploadVideoToStorage(rawVideoUrl, reelIdForStorage)
     : rawVideoUrl;
-  const shouldTranscribeAudio = typeof videoUrl === "string" && videoUrl.length > 0;
-  if (shouldTranscribeAudio && !hasTimestampedTranscript(transcript)) {
-    transcript = await transcribeAudioWithTimestamps(item).catch((error) => {
-      console.warn("Skipping timestamp transcription:", errorMessage(error));
-      return null;
-    }) ?? transcript;
-  }
   const owner = objectValue(item.owner);
   const author = objectValue(item.authorMeta) ?? objectValue(item.author);
   const caption = stringValue(item.caption) ?? stringValue(item.text) ?? stringValue(item.description);
@@ -1014,7 +1021,29 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
     numberValue(item.durationSeconds) ??
     numberValue(objectValue(item.videoMeta)?.duration) ??
     slideshowDuration(mediaItems);
-  const ocrEntries = mediaItems.length > 0 && !videoUrl ? mediaItemsToOCREntries(mediaItems, caption) : undefined;
+
+  const shouldTranscribeAudio = typeof videoUrl === "string" && videoUrl.length > 0;
+  const shouldRunVideoOCR = typeof videoUrl === "string" && videoUrl.length > 0 && !isSlideshow;
+
+  const [transcriptResult, videoOcrEntries] = await Promise.all([
+    shouldTranscribeAudio && !hasTimestampedTranscript(transcript)
+      ? transcribeAudioWithTimestamps(item).catch((error) => {
+          console.warn("Skipping timestamp transcription:", errorMessage(error));
+          return null;
+        })
+      : Promise.resolve(null),
+    shouldRunVideoOCR
+      ? runVideoIntelligenceOCR(videoUrl!, duration).catch((error) => {
+          console.warn("Skipping video OCR:", errorMessage(error));
+          return [] as OCREntry[];
+        })
+      : Promise.resolve([] as OCREntry[]),
+  ]);
+
+  if (transcriptResult !== null) transcript = transcriptResult;
+  const ocrEntries = videoOcrEntries.length > 0
+    ? videoOcrEntries
+    : (mediaItems.length > 0 && !videoUrl ? mediaItemsToOCREntries(mediaItems, caption) : undefined);
 
   return {
     source,
@@ -1836,6 +1865,110 @@ function errorMessage(error: unknown) {
   } catch {
     return "Unexpected error";
   }
+}
+
+async function runVideoIntelligenceOCR(videoUrl: string, durationSeconds: number | null): Promise<OCREntry[]> {
+  if (!googleVideoIntelligenceApiKey) return [];
+
+  const videoResponse = await fetch(videoUrl);
+  if (!videoResponse.ok) return [];
+
+  const videoBuffer = await videoResponse.arrayBuffer();
+  // Google's inline limit is ~10 MB; stay under to be safe
+  if (videoBuffer.byteLength > 9 * 1024 * 1024) {
+    console.log(`Video too large for inline Video Intelligence OCR (${videoBuffer.byteLength} bytes), skipping`);
+    return [];
+  }
+
+  const submitResponse = await fetch(
+    `https://videointelligence.googleapis.com/v1/videos:annotate?key=${googleVideoIntelligenceApiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        inputContent: arrayBufferToBase64(videoBuffer),
+        features: ["TEXT_DETECTION"],
+        videoContext: { textDetectionConfig: { languageHints: ["en"] } },
+      }),
+    },
+  );
+
+  if (!submitResponse.ok) {
+    console.warn("Video Intelligence submit failed:", await submitResponse.text());
+    return [];
+  }
+
+  const operation = await submitResponse.json();
+  const operationName = stringValue(operation.name);
+  if (!operationName) return [];
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await delay(2000);
+    const pollResponse = await fetch(
+      `https://videointelligence.googleapis.com/v1/${operationName}?key=${googleVideoIntelligenceApiKey}`,
+    );
+    if (!pollResponse.ok) continue;
+
+    const result = await pollResponse.json();
+    if (!result.done) continue;
+    if (result.error) {
+      console.warn("Video Intelligence error:", result.error);
+      return [];
+    }
+
+    const annotations = result.response?.annotationResults?.[0]?.textAnnotations;
+    return Array.isArray(annotations) ? parseVideoIntelligenceText(annotations, durationSeconds) : [];
+  }
+
+  console.warn("Video Intelligence polling timed out");
+  return [];
+}
+
+function parseVideoIntelligenceText(annotations: unknown[], durationSeconds: number | null): OCREntry[] {
+  const entries: OCREntry[] = [];
+  const duration = durationSeconds ?? 60;
+
+  for (const annotation of annotations) {
+    const ann = objectValue(annotation);
+    if (!ann) continue;
+
+    const text = stringValue(ann.text);
+    if (!text || !isMeaningfulOCRLine(text)) continue;
+
+    const segments = Array.isArray(ann.segments) ? ann.segments : [];
+    for (const seg of segments) {
+      const s = objectValue(seg);
+      if (!s) continue;
+      const segmentBounds = objectValue(s.segment);
+      const startOffset = stringValue(segmentBounds?.startTimeOffset) ?? "0s";
+      const confidence = typeof s.confidence === "number" ? s.confidence : null;
+      const ts = Math.min(Math.floor(parseTimeOffset(startOffset)), Math.max(0, duration - 1));
+      entries.push({ timestamp_seconds: ts, text, confidence });
+    }
+  }
+
+  return entries
+    .sort((a, b) => a.timestamp_seconds - b.timestamp_seconds)
+    .filter((entry, index, arr) =>
+      index === 0 ||
+      entry.timestamp_seconds !== arr[index - 1].timestamp_seconds ||
+      normalizeOCRText(entry.text) !== normalizeOCRText(arr[index - 1].text)
+    );
+}
+
+function parseTimeOffset(offset: string): number {
+  const n = parseFloat(offset.replace("s", ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 function json(value: unknown, status = 200) {

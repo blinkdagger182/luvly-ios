@@ -6,12 +6,9 @@ final class ShareViewController: UIViewController {
     private let statusLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let openButton = UIButton()
-    private let countdownLabel = UILabel()
     private let activityView = UIActivityIndicatorView(style: .medium)
 
-    private var autoOpenTimer: Timer?
     private var barAnimationTimer: Timer?
-    private var countdownRemaining = 2
     private var pendingLuvlyURL: URL?
 
     override func viewDidLoad() {
@@ -22,7 +19,6 @@ final class ShareViewController: UIViewController {
     }
 
     deinit {
-        self.autoOpenTimer?.invalidate()
         self.barAnimationTimer?.invalidate()
     }
 }
@@ -37,7 +33,6 @@ private extension ShareViewController {
         self.statusLabel.text = "Finding reel..."
         self.subtitleLabel.isHidden = true
         self.openButton.isHidden = true
-        self.countdownLabel.isHidden = true
     }
 
     @MainActor
@@ -48,14 +43,13 @@ private extension ShareViewController {
         self.activityView.isHidden = true
 
         UIView.animate(withDuration: 0.2) {
-            self.statusLabel.text = "Open in Luvly"
-            self.subtitleLabel.text = "Loading with full progress view inside the app."
+            self.statusLabel.text = "Reel queued"
+            self.subtitleLabel.text = "Close this sheet and open Reelplay to continue."
             self.subtitleLabel.isHidden = false
             self.openButton.isHidden = false
         }
 
         self.animatePlaceholderBars()
-        self.startCountdown()
     }
 
     @MainActor
@@ -66,33 +60,10 @@ private extension ShareViewController {
         self.subtitleLabel.text = "Close and try again."
         self.subtitleLabel.isHidden = false
         self.openButton.isHidden = true
-        self.countdownLabel.isHidden = true
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             self.extensionContext?.completeRequest(returningItems: nil)
         }
-    }
-
-    func startCountdown() {
-        self.countdownRemaining = 2
-        self.updateCountdownLabel()
-        self.countdownLabel.isHidden = false
-
-        self.autoOpenTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-            guard let self else { return }
-            self.countdownRemaining -= 1
-            if self.countdownRemaining <= 0 {
-                timer.invalidate()
-                self.openInApp()
-            } else {
-                self.updateCountdownLabel()
-            }
-        }
-    }
-
-    @MainActor
-    func updateCountdownLabel() {
-        self.countdownLabel.text = "Opening automatically in \(self.countdownRemaining)s"
     }
 
     func animatePlaceholderBars() {
@@ -201,8 +172,6 @@ private extension ShareViewController {
 
 private extension ShareViewController {
     @objc func openButtonTapped() {
-        self.autoOpenTimer?.invalidate()
-        self.autoOpenTimer = nil
         self.openInApp()
     }
 
@@ -211,6 +180,10 @@ private extension ShareViewController {
             self.extensionContext?.completeRequest(returningItems: nil)
             return
         }
+        // Write to App Group UserDefaults so the main app picks it up on foreground
+        // even if extensionContext.open() is blocked by the host app (e.g. TikTok).
+        UserDefaults(suiteName: "group.com.riskcreatives.luvly")?
+            .set(url.absoluteString, forKey: "pendingImportURL")
         self.extensionContext?.open(url) { [weak self] _ in
             self?.extensionContext?.completeRequest(returningItems: nil)
         }
@@ -285,12 +258,6 @@ private extension ShareViewController {
         self.openButton.addTarget(self, action: #selector(self.openButtonTapped), for: .touchUpInside)
         self.openButton.translatesAutoresizingMaskIntoConstraints = false
 
-        // Countdown
-        self.countdownLabel.font = UIFont.preferredFont(forTextStyle: .caption1)
-        self.countdownLabel.textColor = .tertiaryLabel
-        self.countdownLabel.textAlignment = .center
-        self.countdownLabel.translatesAutoresizingMaskIntoConstraints = false
-
         // Stack it all
         let textStack = UIStackView(arrangedSubviews: [
             self.activityView,
@@ -304,7 +271,6 @@ private extension ShareViewController {
 
         let actionStack = UIStackView(arrangedSubviews: [
             self.openButton,
-            self.countdownLabel,
         ])
         actionStack.axis = .vertical
         actionStack.alignment = .center

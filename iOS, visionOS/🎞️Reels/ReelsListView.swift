@@ -160,7 +160,7 @@ struct ReelplayRootView: View {
                     onRefresh: { await self.loadReels() },
                     onImport: { self.selectedTab = .add },
                     onDelete: { await self.deleteReel($0) },
-                    searchText: self.$searchText
+                    onSearchTap: { self.selectedTab = .search }
                 )
             case .search:
                 ReelplaySearchScreen(
@@ -887,7 +887,7 @@ private struct ReelplayHomeScreen: View {
     let onRefresh: () async -> Void
     let onImport: () -> Void
     let onDelete: (ReelItem) async -> Void
-    @Binding var searchText: String
+    let onSearchTap: () -> Void
     @State private var menuReel: ReelItem?
 
     private var selectedCollection: ReelCollection? {
@@ -939,7 +939,7 @@ private struct ReelplayHomeScreen: View {
 
                     HomeHeroImportCard(featuredReel: self.reels.first, onImport: self.onImport)
 
-                    HomeSearchField(text: self.$searchText)
+                    HomeSearchField(onTap: self.onSearchTap)
 
                     if self.isInitialLibraryEmpty {
                         HomeInitialLibraryState(
@@ -2761,34 +2761,37 @@ private struct SmartStepsPreview: View {
 }
 
 private struct HomeSearchField: View {
-    @Binding var text: String
+    let onTap: () -> Void
 
     var body: some View {
-        HStack(spacing: 13) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(ReelplayTheme.black.opacity(0.45))
+        Button(action: self.onTap) {
+            HStack(spacing: 13) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.45))
 
-            TextField("Search your reels or topics...", text: self.$text)
-                .font(.system(size: 17, weight: .regular))
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                Text("Search your reels or topics...")
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.36))
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Rectangle()
-                .fill(ReelplayTheme.divider)
-                .frame(width: 1, height: 32)
-                .padding(.leading, 6)
+                Rectangle()
+                    .fill(ReelplayTheme.divider)
+                    .frame(width: 1, height: 32)
+                    .padding(.leading, 6)
 
-            Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+            }
+            .padding(.horizontal, 18)
+            .frame(height: 62)
+            .background(ReelplayTheme.surface.opacity(0.86))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(ReelplayTheme.divider))
+            .shadow(color: .black.opacity(0.04), radius: 14, y: 7)
         }
-        .padding(.horizontal, 18)
-        .frame(height: 62)
-        .background(ReelplayTheme.surface.opacity(0.86))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(ReelplayTheme.divider))
-        .shadow(color: .black.opacity(0.04), radius: 14, y: 7)
+        .buttonStyle(.plain)
     }
 }
 
@@ -2816,26 +2819,12 @@ private struct ContinuePlayingCard: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    Text(self.reel.displayTitle)
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(ReelplayTheme.black)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.72)
-
-                    Spacer(minLength: 8)
-
-                    Button {
-                        self.onMenuTap?()
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundStyle(ReelplayTheme.black.opacity(0.55))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
+                Text(self.reel.displayTitle)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+                    .padding(.trailing, 28)
 
                 HStack(spacing: 7) {
                     Text("Step \(self.currentStep) of \(self.totalSteps)")
@@ -2887,6 +2876,19 @@ private struct ContinuePlayingCard: View {
         .shadow(color: .black.opacity(0.04), radius: 16, y: 8)
         .frame(maxWidth: .infinity)
         .clipped()
+        .overlay(alignment: .topTrailing) {
+            Button {
+                self.onMenuTap?()
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.55))
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(6)
+        }
     }
 
     private var totalSteps: Int {
@@ -3751,10 +3753,14 @@ private struct CachedRemoteImage<Placeholder: View>: View {
     @State private var image: UIImage?
     @State private var failedURL: URL?
 
+    private var effectiveImage: UIImage? {
+        image ?? url.flatMap { ReelplayImageCache.shared.image(for: $0.absoluteString) }
+    }
+
     var body: some View {
         Group {
-            if let image {
-                Image(uiImage: image)
+            if let img = effectiveImage {
+                Image(uiImage: img)
                     .resizable()
                     .aspectRatio(contentMode: self.contentMode)
             } else {
@@ -4906,7 +4912,9 @@ private struct ReelSummaryView: View {
 
                     HStack(spacing: 10) {
                         Button {
-                            self.isShowingDownloadSheet = true
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                self.isShowingDownloadSheet = true
+                            }
                         } label: {
                             Image(systemName: "square.and.arrow.down")
                                 .frame(width: 26, height: 30)
@@ -4915,7 +4923,9 @@ private struct ReelSummaryView: View {
                         .disabled(self.reel.videoURL == nil || self.downloadState.isWorking)
 
                         Button {
-                            self.isShowingMoreSheet = true
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                self.isShowingMoreSheet = true
+                            }
                         } label: {
                             Image(systemName: "ellipsis")
                                 .frame(width: 26, height: 30)
