@@ -5538,14 +5538,34 @@ private struct ReelReferenceDetailView: View {
         .ignoresSafeArea(edges: .top)
     }
 
+    private var isCarousel: Bool {
+        self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+    }
+
     private var hero: some View {
         ZStack(alignment: .bottomLeading) {
-            CachedRemoteImage(url: self.reel.displayThumbnailURL) {
-                ReelThumbnailPlaceholder()
+            if self.isCarousel {
+                ZStack {
+                    CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                        ReelThumbnailPlaceholder()
+                    }
+                    .blur(radius: 18)
+                    .scaleEffect(1.08)
+                    CachedRemoteImage(url: self.reel.displayThumbnailURL, contentMode: .fit) {
+                        ReelThumbnailPlaceholder()
+                    }
+                }
+                .frame(height: 286)
+                .frame(maxWidth: .infinity)
+                .clipped()
+            } else {
+                CachedRemoteImage(url: self.reel.displayThumbnailURL) {
+                    ReelThumbnailPlaceholder()
+                }
+                .frame(height: 286)
+                .frame(maxWidth: .infinity)
+                .clipped()
             }
-            .frame(height: 286)
-            .frame(maxWidth: .infinity)
-            .clipped()
 
             LinearGradient(
                 colors: [.clear, .black.opacity(0.72)],

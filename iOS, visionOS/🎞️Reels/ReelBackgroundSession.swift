@@ -9,7 +9,6 @@ final class ReelBackgroundSession: NSObject {
 
     private var urlSession: URLSession!
     private var taskData: [Int: Data] = [:]
-    private var taskResponse: [Int: URLResponse] = [:]
     private var completions: [Int: (Result<(URLResponse, Data), Error>) -> Void] = [:]
     var backgroundCompletionHandler: (() -> Void)?
 
@@ -23,14 +22,22 @@ final class ReelBackgroundSession: NSObject {
         self.urlSession = URLSession(configuration: config, delegate: self, delegateQueue: .main)
     }
 
+    // Staged uploads must live in a location iOS preserves across suspension.
+    // tmp/ can be cleaned between task creation and upload start; Caches/ survives.
+    private static var uploadStagingDir: URL {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let dir = caches.appendingPathComponent("reel-uploads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     func scheduleUpload(
         request: URLRequest,
         body: Data,
         jobID: UUID,
         completion: @escaping (Result<(URLResponse, Data), Error>) -> Void
     ) throws {
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(jobID.uuidString + ".json")
+        let tempURL = Self.uploadStagingDir.appendingPathComponent(jobID.uuidString + ".json")
         try body.write(to: tempURL)
 
         var req = request
@@ -43,16 +50,6 @@ final class ReelBackgroundSession: NSObject {
 }
 
 extension ReelBackgroundSession: URLSessionDataDelegate {
-    func urlSession(
-        _ session: URLSession,
-        dataTask: URLSessionDataTask,
-        didReceive response: URLResponse,
-        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
-    ) {
-        taskResponse[dataTask.taskIdentifier] = response
-        completionHandler(.allow)
-    }
-
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         taskData[dataTask.taskIdentifier, default: Data()].append(data)
     }
@@ -60,14 +57,22 @@ extension ReelBackgroundSession: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let id = task.taskIdentifier
         let data = taskData.removeValue(forKey: id) ?? Data()
-        let response = taskResponse.removeValue(forKey: id)
         let completion = completions.removeValue(forKey: id)
+
+        // Clean up staged upload file now that iOS no longer needs it.
+        if let jobIDString = task.taskDescription {
+            let stagedURL = Self.uploadStagingDir.appendingPathComponent(jobIDString + ".json")
+            try? FileManager.default.removeItem(at: stagedURL)
+        }
 
         if let error {
             completion?(.failure(error))
             return
         }
-        guard let response else {
+        // task.response is reliably populated at completion time — more robust than
+        // tracking it via didReceive(response:completionHandler:) which background
+        // upload sessions may not call consistently.
+        guard let response = task.response else {
             completion?(.failure(URLError(.badServerResponse)))
             return
         }
