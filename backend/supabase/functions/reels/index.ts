@@ -39,6 +39,13 @@ type TranscriptSegment = {
   text: string;
 };
 
+type SignalAnalysis = {
+  reelType: "ocr_led" | "audio_led" | "hybrid" | "weak";
+  dominantSignal: "screen_text" | "voice" | "hybrid" | "caption" | "unknown";
+  confidence: number;
+  isMusicLike: boolean;
+};
+
 type OCREntry = {
   timestamp_seconds: number;
   text: string;
@@ -125,7 +132,7 @@ async function listProfileLibrary(profileId: string, url: URL) {
   const limit = Math.min(Math.max(clampInt(Number(url.searchParams.get("limit") ?? 30), 30), 1), 50);
   const { data, error } = await supabase
     .from("reel_profile_library")
-    .select("added_at, last_opened_at, reels(*, reel_segments(*), reel_ocr_entries(*))")
+    .select("added_at, last_opened_at, reels(*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*))")
     .eq("profile_id", profileId)
     .order("added_at", { ascending: false })
     .limit(limit);
@@ -151,7 +158,7 @@ async function listProfileLibrary(profileId: string, url: URL) {
 async function getReel(id: string) {
   const { data, error } = await supabase
     .from("reels")
-    .select("*, reel_segments(*), reel_ocr_entries(*)")
+    .select("*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*)")
     .eq("id", id)
     .single();
 
@@ -244,7 +251,7 @@ async function socialSummary(profileId: string) {
     supabase.from("reel_bookmarks").select("reel_id, created_at").eq("profile_id", profileId),
     supabase.from("reel_public_shares").select("reel_id, niche_tags, share_count, save_count, view_count, shared_at").eq("profile_id", profileId).eq("is_public", true),
     supabase.from("reel_social_collections").select("*, reel_social_collection_items(reel_id, order_index)").eq("profile_id", profileId).order("created_at", { ascending: false }),
-    supabase.from("reel_friend_shares").select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*)), collection:reel_social_collections(*)").or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${handle}`).order("created_at", { ascending: false }).limit(30),
+    supabase.from("reel_friend_shares").select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*)), collection:reel_social_collections(*)").or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${handle}`).order("created_at", { ascending: false }).limit(30),
     friendState(profileId),
   ]);
 
@@ -272,7 +279,7 @@ async function discoverSocialReels(query: string, niche: string, limit = 30) {
   const resultLimit = Math.min(Math.max(limit, 1), 50);
   let publicShareRequest = supabase
     .from("reel_public_shares")
-    .select("reel_id, niche_tags, share_count, save_count, view_count, shared_at, reels(*, reel_segments(*), reel_ocr_entries(*))")
+    .select("reel_id, niche_tags, share_count, save_count, view_count, shared_at, reels(*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*))")
     .eq("is_public", true)
     .order("share_count", { ascending: false })
     .order("save_count", { ascending: false })
@@ -288,7 +295,7 @@ async function discoverSocialReels(query: string, niche: string, limit = 30) {
     publicShareRequest,
     supabase
       .from("reel_social_collections")
-      .select("id, name, created_at, reel_social_collection_items(reel_id, order_index, reels(*, reel_segments(*), reel_ocr_entries(*)))")
+      .select("id, name, created_at, reel_social_collection_items(reel_id, order_index, reels(*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*)))")
       .eq("is_public", true)
       .order("created_at", { ascending: false })
       .limit(resultLimit),
@@ -524,7 +531,7 @@ async function shareInbox(profileId: string) {
 
   const { data, error } = await supabase
     .from("reel_friend_shares")
-    .select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*)), collection:reel_social_collections(*)")
+    .select("*, reel:reels(*, reel_segments(*), reel_ocr_entries(*), reel_transcript_segments(*)), collection:reel_social_collections(*)")
     .or(`receiver_profile_id.eq.${profileId},receiver_handle.eq.${handle}`)
     .order("created_at", { ascending: false })
     .limit(50);
@@ -687,6 +694,25 @@ async function incrementPublicShareCount(reelId: string) {
     .eq("reel_id", reelId);
 }
 
+async function storeTranscriptSegments(reelId: string, transcript: unknown, isMusicLike: boolean) {
+  if (!hasTimestampedTranscript(transcript)) return;
+  const segments = transcript as TranscriptSegment[];
+  await supabase.from("reel_transcript_segments").delete().eq("reel_id", reelId);
+  const rows = segments
+    .filter((s) => s.text.trim().length > 0 && s.end > s.start)
+    .map((s) => ({
+      reel_id: reelId,
+      start_seconds: s.start,
+      end_seconds: s.end,
+      text: s.text.trim(),
+      is_music_like: isMusicLike,
+    }));
+  if (rows.length > 0) {
+    const { error } = await supabase.from("reel_transcript_segments").insert(rows);
+    if (error) console.warn("Failed to store transcript segments:", error.message);
+  }
+}
+
 async function updateReelOCR(id: string, rawEntries: unknown) {
   const allEntries = normalizeOCREntries(rawEntries);
   // Deduplicate: keep only the first entry per (timestamp, normalizedText) pair
@@ -741,7 +767,8 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
     ...reel,
     ocr_entries: collapsedEntries,
   } as NormalizedReel;
-  const summary = await summarizeReel(input);
+  const signal = classifySignals(input);
+  const summary = await summarizeReel(input, signal);
   const segments = normalizeSegments(summary.segments, input);
 
   const { error: updateError } = await supabase
@@ -750,6 +777,9 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
       title: summary.title,
       category: summary.category,
       summary: summary.summary,
+      reel_type: signal.reelType,
+      dominant_signal: signal.dominantSignal,
+      signal_confidence: signal.confidence,
       status: "ready",
     })
     .eq("id", id);
@@ -813,7 +843,8 @@ async function importReel(sourceUrl: string, profileId: string) {
       throw new Error("TikTok videos over 90 seconds are not supported.");
     }
     const normalized = await normalizeApifyItem(sourceUrl, apifyItem);
-    const summary = await summarizeReel(normalized);
+    const signal = classifySignals(normalized);
+    const summary = await summarizeReel(normalized, signal);
 
     const needsVisualOCR = hasVideoURL(normalized) || (Array.isArray(normalized.media_items) && normalized.media_items.length > 0);
     const hasServerOCR = hasOCREntries(normalized.ocr_entries);
@@ -826,6 +857,9 @@ async function importReel(sourceUrl: string, profileId: string) {
         category: summary.category,
         summary: summary.summary,
         raw_payload: apifyItem,
+        reel_type: signal.reelType,
+        dominant_signal: signal.dominantSignal,
+        signal_confidence: signal.confidence,
         status: needsVisualOCR && !hasServerOCR ? "ready_basic" : "ready",
       })
       .eq("id", created.id)
@@ -866,6 +900,8 @@ async function importReel(sourceUrl: string, profileId: string) {
       );
       if (ocrError) console.warn("Failed to store server OCR entries:", ocrError.message);
     }
+
+    await storeTranscriptSegments(created.id, normalized.transcript, signal.isMusicLike);
 
     await addReelToProfileLibrary(profileId, reel.id);
     return await getReel(reel.id);
@@ -1072,7 +1108,71 @@ async function normalizeApifyItem(sourceUrl: string, item: Record<string, unknow
   };
 }
 
-async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummary> {
+function scoreOCR(entries: OCREntry[] | undefined): number {
+  if (!hasOCREntries(entries)) return 0;
+  const events = expandOCRVisualEvents(entries!, 9999);
+  const meaningful = events.filter((e) => meaningfulOCRText(e.text).length > 0);
+  if (meaningful.length >= 4) return 0.9;
+  if (meaningful.length >= 2) return 0.6;
+  if (meaningful.length === 1) return 0.3;
+  return 0;
+}
+
+function scoreAudio(transcript: unknown): { score: number; isMusicLike: boolean } {
+  if (!hasTimestampedTranscript(transcript)) {
+    const text = transcriptText(transcript);
+    if (text.trim().split(/\s+/).length < 10) return { score: 0, isMusicLike: false };
+    return { score: 0.4, isMusicLike: false };
+  }
+  const segments = transcript as TranscriptSegment[];
+  const totalWords = segments.reduce((sum, s) => sum + s.text.trim().split(/\s+/).length, 0);
+  if (totalWords < 5) return { score: 0, isMusicLike: false };
+  const avgWordsPerSeg = totalWords / segments.length;
+  const avgDuration = segments.reduce((sum, s) => sum + (s.end - s.start), 0) / segments.length;
+  const shortFraction = segments.filter((s) => s.text.trim().split(/\s+/).length <= 4).length / segments.length;
+  const isMusicLike = shortFraction > 0.7 && avgDuration < 2.5 && segments.length > 8;
+  if (isMusicLike) return { score: 0.1, isMusicLike: true };
+  if (totalWords >= 50 && avgWordsPerSeg >= 5) return { score: 0.9, isMusicLike: false };
+  if (totalWords >= 20) return { score: 0.6, isMusicLike: false };
+  return { score: 0.3, isMusicLike: false };
+}
+
+function classifySignals(input: NormalizedReel): SignalAnalysis {
+  const ocrScore = scoreOCR(input.ocr_entries);
+  const { score: audioScore, isMusicLike } = scoreAudio(input.transcript);
+  const HIGH = 0.6;
+  if (ocrScore >= HIGH && audioScore >= HIGH) {
+    return { reelType: "hybrid", dominantSignal: "hybrid", confidence: Math.max(ocrScore, audioScore), isMusicLike };
+  }
+  if (ocrScore >= HIGH) {
+    return { reelType: "ocr_led", dominantSignal: "screen_text", confidence: ocrScore, isMusicLike };
+  }
+  if (audioScore >= HIGH) {
+    return { reelType: "audio_led", dominantSignal: "voice", confidence: audioScore, isMusicLike };
+  }
+  const hasCaption = typeof input.caption === "string" && input.caption.trim().length > 30;
+  if (hasCaption) {
+    return { reelType: "weak", dominantSignal: "caption", confidence: 0.3, isMusicLike };
+  }
+  return { reelType: "weak", dominantSignal: "unknown", confidence: 0.1, isMusicLike };
+}
+
+function signalRoutingInstruction(signal: SignalAnalysis | undefined): string {
+  const type = signal?.reelType ?? "weak";
+  switch (type) {
+    case "ocr_led":
+      return "On-screen text (ocr_entries) is the primary signal. Use OCR text changes as hard segment boundaries and titles. Do NOT use audio transcript timestamps as segment boundaries — the audio may be background music or song lyrics. Use transcript only to enrich descriptions where the creator is clearly speaking instructions.";
+    case "audio_led":
+      return "Audio transcript is the primary signal. Use transcript timestamps for segment boundaries. Use OCR entries only for additional context or titles when present.";
+    case "hybrid":
+      return "Both screen text and audio are strong signals. Use OCR text changes for segment boundaries and titles. Use transcript content to enrich step descriptions with what the creator said.";
+    case "weak":
+    default:
+      return "Signal quality is low — no reliable OCR or speech detected. Generate a minimal summary from caption or title. Do not invent precise steps. Prefer a single broad segment over fabricated detail.";
+  }
+}
+
+async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnalysis): Promise<ReelSummary> {
   const detectedLanguage = typeof input.detected_language === "string" ? input.detected_language : null;
   const languageLine = detectedLanguage && detectedLanguage !== "en"
     ? `The audio language was detected as "${detectedLanguage}". Transcript text may be in this language. Use the original language for raw_text; translate titles and descriptions to English.`
@@ -1088,14 +1188,9 @@ async function summarizeReel(input: Record<string, unknown>): Promise<ReelSummar
       "IMPORTANT: Base every segment title and description strictly on evidence present in the transcript, ocr_entries, caption, or media_items. Do NOT invent, guess, or hallucinate segment names (e.g. do not generate generic workout steps like 'Warm Up', 'Push Ups', 'Cool Down' unless those exact words appear in the provided data).",
       languageLine,
       "If transcript and ocr_entries are both absent or empty, generate the minimum number of segments supportable by the caption or title alone. Do not fabricate content.",
-      "When timestamped transcript items are provided with meaningful speech content, prefer those timestamps for segment boundaries — audio changes are the primary signal.",
-      "When ocr_entries are provided, use their timestamp_seconds and text as visual on-screen context to label and enrich segments.",
-      "Only use OCR text changes as primary segment boundaries when no timestamped transcript is available.",
+      signalRoutingInstruction(signal),
       "When media_items are provided without video_url, treat the content as an image slideshow.",
       "For image slideshows, use the synthetic timestamps and any per-slide visual text to create replayable slide segments.",
-      "If transcript is sparse but OCR is useful, prefer OCR-derived boundaries and titles.",
-      "If on-screen text changes over time, each meaningful text change should usually become its own segment.",
-      "For workout/list reels, split visible exercise or step lines into separate replayable segments when possible.",
       "Return one segment per distinct visual state for list/place/item content (up to 20). For narrative or instructional content, return 4 to 8 high-signal segments. Do not return null values.",
       JSON.stringify(input),
     ].join("\n\n"),

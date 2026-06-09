@@ -5591,6 +5591,8 @@ private struct ReelSummaryView: View {
     @State private var selectedTab = 0
     @State private var expandedSegmentID: UUID?
     @State private var focusedSegmentID: UUID?
+    @State private var focusedTranscriptID: UUID?
+    @State private var focusedOCRID: UUID?
     @State private var showRetryConfirmation = false
     @State private var isShowingFullscreenVideo = false
     @State private var expandDragTranslation: CGFloat = 0
@@ -5702,10 +5704,19 @@ private struct ReelSummaryView: View {
 
                     Picker("", selection: self.$selectedTab) {
                         Text("Steps").tag(0)
-                        Text("Details").tag(1)
+                        Text("Voice").tag(1)
+                        Text("Screen").tag(2)
                     }
                     .pickerStyle(.segmented)
                     .padding(.horizontal, 20)
+                    .onChange(of: self.selectedTab) { _, _ in
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                            self.focusedTranscriptID = nil
+                            self.focusedOCRID = nil
+                            self.focusedSegmentID = nil
+                            self.expandedSegmentID = nil
+                        }
+                    }
 
                     if self.selectedTab == 0 {
                         if self.reel.hasProcessingError {
@@ -5744,19 +5755,36 @@ private struct ReelSummaryView: View {
                                     )
                                 }
                             }
+                            self.signalBadge
+                                .padding(.horizontal, 20)
+                                .padding(.top, 8)
                         }
+                    } else if self.selectedTab == 1 {
+                        ReelVoiceTab(
+                            reel: self.reel,
+                            transcriptSegments: self.reel.transcriptSegments,
+                            focusedID: self.focusedTranscriptID,
+                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
+                            onSelect: { segment in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    self.focusedTranscriptID = self.focusedTranscriptID == segment.id ? nil : segment.id
+                                }
+                                self.playback.seek(to: segment.startSeconds)
+                            }
+                        )
                     } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Summary")
-                                .font(.headline.weight(.bold))
-                                .foregroundStyle(ReelplayTheme.black)
-
-                            Text(self.reel.summary ?? self.reel.caption ?? "No summary yet.")
-                                .font(.subheadline)
-                                .foregroundStyle(ReelplayTheme.black.opacity(0.72))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .padding(.horizontal, 20)
+                        ReelScreenTab(
+                            reel: self.reel,
+                            ocrEntries: self.reel.ocrEntries,
+                            focusedID: self.focusedOCRID,
+                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
+                            onSelect: { entry in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    self.focusedOCRID = self.focusedOCRID == entry.id ? nil : entry.id
+                                }
+                                self.playback.seek(to: Double(entry.timestampSeconds))
+                            }
+                        )
                     }
                 }
                 .padding(.top, self.attachedContentTopHeight)
@@ -6193,6 +6221,249 @@ private struct ReelSummaryView: View {
             self.isShowingFullscreenVideo = true
         }
         self.playback.play(segment)
+    }
+
+    @ViewBuilder
+    private var signalBadge: some View {
+        if let signal = self.reel.dominantSignal, signal != "unknown" {
+            let (label, icon): (String, String) = switch signal {
+            case "screen_text": ("From screen text", "text.viewfinder")
+            case "voice": ("From voice", "waveform")
+            case "hybrid": ("From screen + voice", "waveform.and.magnifyingglass")
+            case "caption": ("From caption", "text.bubble")
+            default: ("", "")
+            }
+            if !label.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: icon)
+                        .font(.caption2.weight(.semibold))
+                    Text(label)
+                        .font(.caption2.weight(.semibold))
+                }
+                .foregroundStyle(ReelplayTheme.black.opacity(0.48))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(ReelplayTheme.surface)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(ReelplayTheme.divider))
+            }
+        }
+    }
+}
+
+private struct ReelVoiceTab: View {
+    let reel: ReelItem
+    let transcriptSegments: [ReelTranscriptSegment]?
+    let focusedID: UUID?
+    let canLoadThumbnail: Bool
+    let onSelect: (ReelTranscriptSegment) -> Void
+
+    private var segments: [ReelTranscriptSegment] {
+        (transcriptSegments ?? []).filter { !$0.isMusicLike }
+    }
+
+    private var hasMusicOnly: Bool {
+        let all = transcriptSegments ?? []
+        return !all.isEmpty && all.allSatisfy { $0.isMusicLike }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if transcriptSegments == nil || transcriptSegments!.isEmpty {
+                Text("No voice detected in this reel.")
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .padding(.vertical, 20)
+                    .padding(.horizontal, 20)
+            } else if hasMusicOnly {
+                Text("Audio appears to be background music, not speech.")
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .padding(.vertical, 20)
+                    .padding(.horizontal, 20)
+            } else {
+                ForEach(Array(segments.enumerated()), id: \.element.id) { index, segment in
+                    TranscriptSegmentRow(
+                        reel: self.reel,
+                        segment: segment,
+                        isFocused: self.focusedID == segment.id,
+                        canLoadThumbnail: self.canLoadThumbnail,
+                        previousText: index > 0 ? segments[index - 1].text : nil,
+                        nextText: index < segments.count - 1 ? segments[index + 1].text : nil,
+                        onSelect: { self.onSelect(segment) }
+                    )
+                }
+                if (transcriptSegments ?? []).contains(where: { $0.isMusicLike }) {
+                    Text("Background music excluded from voice view.")
+                        .font(.caption)
+                        .foregroundStyle(ReelplayTheme.mutedText)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 10)
+                }
+            }
+        }
+    }
+}
+
+private struct TranscriptSegmentRow: View {
+    let reel: ReelItem
+    let segment: ReelTranscriptSegment
+    let isFocused: Bool
+    let canLoadThumbnail: Bool
+    let previousText: String?
+    let nextText: String?
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: self.onSelect) {
+            HStack(spacing: 12) {
+                ZStack(alignment: .bottomTrailing) {
+                    SegmentFrameThumbnail(
+                        videoURL: self.reel.videoURL,
+                        fallbackURL: self.reel.displayThumbnailURL,
+                        seconds: Int(self.segment.startSeconds),
+                        shouldLoad: self.canLoadThumbnail
+                    )
+                    .frame(width: 82, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Text(SegmentPageView.format(Int(self.segment.startSeconds)))
+                        .font(.caption2.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(5)
+                }
+
+                Text(self.segment.text)
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.black.opacity(self.isFocused ? 1 : 0.72))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background {
+                if self.isFocused {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(ReelplayTheme.accent.opacity(0.10))
+                        .overlay(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(ReelplayTheme.accent)
+                                .frame(width: 4)
+                                .padding(.vertical, 10)
+                        }
+                        .padding(.horizontal, 12)
+                        .transition(.opacity)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(self.isFocused ? ReelplayTheme.accent.opacity(0.24) : ReelplayTheme.black.opacity(0.06))
+                .frame(height: 1)
+                .padding(.leading, 112)
+        }
+    }
+}
+
+private struct ReelScreenTab: View {
+    let reel: ReelItem
+    let ocrEntries: [ReelOCREntry]?
+    let focusedID: UUID?
+    let canLoadThumbnail: Bool
+    let onSelect: (ReelOCREntry) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if ocrEntries == nil || ocrEntries!.isEmpty {
+                Text("No on-screen text detected in this reel.")
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .padding(.vertical, 20)
+                    .padding(.horizontal, 20)
+            } else {
+                ForEach(ocrEntries!) { entry in
+                    OCREntryRow(
+                        reel: self.reel,
+                        entry: entry,
+                        isFocused: self.focusedID == entry.id,
+                        canLoadThumbnail: self.canLoadThumbnail,
+                        onSelect: { self.onSelect(entry) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct OCREntryRow: View {
+    let reel: ReelItem
+    let entry: ReelOCREntry
+    let isFocused: Bool
+    let canLoadThumbnail: Bool
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: self.onSelect) {
+            HStack(spacing: 12) {
+                ZStack(alignment: .bottomTrailing) {
+                    SegmentFrameThumbnail(
+                        videoURL: self.reel.videoURL,
+                        fallbackURL: self.reel.displayThumbnailURL,
+                        seconds: self.entry.timestampSeconds,
+                        shouldLoad: self.canLoadThumbnail
+                    )
+                    .frame(width: 82, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                    Text(SegmentPageView.format(self.entry.timestampSeconds))
+                        .font(.caption2.monospacedDigit().weight(.bold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .padding(5)
+                }
+
+                Text(self.entry.text)
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.black.opacity(self.isFocused ? 1 : 0.72))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background {
+                if self.isFocused {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(ReelplayTheme.accent.opacity(0.10))
+                        .overlay(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(ReelplayTheme.accent)
+                                .frame(width: 4)
+                                .padding(.vertical, 10)
+                        }
+                        .padding(.horizontal, 12)
+                        .transition(.opacity)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(self.isFocused ? ReelplayTheme.accent.opacity(0.24) : ReelplayTheme.black.opacity(0.06))
+                .frame(height: 1)
+                .padding(.leading, 112)
+        }
     }
 }
 

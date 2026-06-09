@@ -20,6 +20,9 @@ struct ReelItem: Identifiable, Codable, Hashable {
     let social: ReelSocialStats?
     let segments: [ReelSegment]
     let ocrEntries: [ReelOCREntry]?
+    let transcriptSegments: [ReelTranscriptSegment]?
+    let reelType: String?
+    let dominantSignal: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -41,6 +44,9 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case social
         case segments = "reel_segments"
         case ocrEntries = "reel_ocr_entries"
+        case transcriptSegments = "reel_transcript_segments"
+        case reelType = "reel_type"
+        case dominantSignal = "dominant_signal"
     }
 }
 
@@ -274,5 +280,21 @@ struct ReelOCREntry: Identifiable, Codable, Hashable {
         case timestampSeconds = "timestamp_seconds"
         case text
         case confidence
+    }
+}
+
+struct ReelTranscriptSegment: Identifiable, Codable, Hashable {
+    let id: UUID
+    let startSeconds: Double
+    let endSeconds: Double
+    let text: String
+    let isMusicLike: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case startSeconds = "start_seconds"
+        case endSeconds = "end_seconds"
+        case text
+        case isMusicLike = "is_music_like"
     }
 }
