@@ -2,7 +2,7 @@ import SwiftUI
 
 @main
 struct iOS_and_visionOS_App: App {
-    
+    @UIApplicationDelegateAdaptor(ReelplayAppDelegate.self) var delegate
     @StateObject private var model = 📱AppModel()
     
     var body: some Scene {

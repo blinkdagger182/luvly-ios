@@ -4,6 +4,7 @@ class 📱AppModel: ObservableObject {
     @Published var tab: 🔖Tab = .notesList
     @Published var sheet: 💬Sheet? = nil
     @Published var sharedReelURL: URL? = nil
+    @Published var pendingReelURLs: [URL] = []
     @Published private(set) var preferTextFieldFocus: 📝NoteFamily? = nil
     let primaryNote: 📝NoteModel = .init(.primary)
     let secondaryNote: 📝NoteModel = .init(.secondary)
@@ -63,11 +64,25 @@ extension 📱AppModel {
 
     func drainPendingImportURL() {
         let defaults = UserDefaults(suiteName: "group.com.riskcreatives.luvly")
-        guard let raw = defaults?.string(forKey: "pendingImportURL"),
-              let luvlyURL = URL(string: raw),
-              let reelURL = Self.decodeSharedReelURL(luvlyURL) else { return }
-        defaults?.removeObject(forKey: "pendingImportURL")
-        self.sharedReelURL = reelURL
+
+        // New: array of pending URLs (appended by share extension without overwriting)
+        var urls: [URL] = []
+        if let rawArray = defaults?.stringArray(forKey: "pendingImportURLs") {
+            urls = rawArray.compactMap { URL(string: $0) }.compactMap { Self.decodeSharedReelURL($0) }
+            defaults?.removeObject(forKey: "pendingImportURLs")
+        }
+
+        // Legacy: single pendingImportURL key
+        if let raw = defaults?.string(forKey: "pendingImportURL"),
+           let luvlyURL = URL(string: raw),
+           let reelURL = Self.decodeSharedReelURL(luvlyURL) {
+            defaults?.removeObject(forKey: "pendingImportURL")
+            if !urls.contains(reelURL) { urls.append(reelURL) }
+        }
+
+        guard !urls.isEmpty else { return }
+
+        self.pendingReelURLs = urls
         self.tab = .reels
         💥Feedback.light()
     }

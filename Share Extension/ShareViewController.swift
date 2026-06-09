@@ -43,6 +43,9 @@ private extension ShareViewController {
         self.pendingLuvlyURL = luvlyURL
         self.sourceAppName = Self.sourceName(from: originalURL)
 
+        // Save immediately — don't wait for button tap so the URL survives even if user dismisses
+        Self.appendPendingURL(luvlyURL)
+
         self.activityView.stopAnimating()
         self.activityView.isHidden = true
 
@@ -63,6 +66,15 @@ private extension ShareViewController {
         }
 
         self.animatePlaceholderBars()
+    }
+
+    static func appendPendingURL(_ luvlyURL: URL) {
+        let defaults = UserDefaults(suiteName: "group.com.riskcreatives.luvly")
+        var existing = defaults?.stringArray(forKey: "pendingImportURLs") ?? []
+        let urlString = luvlyURL.absoluteString
+        guard !existing.contains(urlString) else { return }
+        existing.append(urlString)
+        defaults?.set(existing, forKey: "pendingImportURLs")
     }
 
     @MainActor
@@ -206,8 +218,7 @@ private extension ShareViewController {
             self.extensionContext?.completeRequest(returningItems: nil)
             return
         }
-        UserDefaults(suiteName: "group.com.riskcreatives.luvly")?
-            .set(url.absoluteString, forKey: "pendingImportURL")
+        // URL already saved in appendPendingURL — just open the app
         self.extensionContext?.open(url) { [weak self] _ in
             self?.extensionContext?.completeRequest(returningItems: nil)
         }

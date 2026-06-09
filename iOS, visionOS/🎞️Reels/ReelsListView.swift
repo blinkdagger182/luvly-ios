@@ -153,7 +153,7 @@ struct ReelplayRootView: View {
                         title: "Importing",
                         headline: "Processing \(job.displayTitle)…",
                         subheadline: "This usually takes 15–60 seconds.",
-                        footer: "You can use other apps — but keep Reelplay running in the background.",
+                        footer: "Import continues in the background — you can freely switch apps.",
                         sourceURL: URL(string: job.url),
                         stages: self.importStages,
                         activeStageIndex: self.importQueueStageIndex,
@@ -214,6 +214,11 @@ struct ReelplayRootView: View {
             guard let url else { return }
             self.enqueueImport(url: url)
         }
+        .onChange(of: self.app.pendingReelURLs) { _, urls in
+            guard !urls.isEmpty else { return }
+            for url in urls { self.enqueueImport(url: url) }
+            self.app.pendingReelURLs = []
+        }
         .onChange(of: self.selectedTab) { _, tab in
             Task { await self.loadDataIfNeeded(for: tab) }
         }
@@ -263,9 +268,15 @@ struct ReelplayRootView: View {
             case .add:
                 ReelplayImportScreen(
                     importText: self.$importText,
+                    importQueue: self.importQueue,
                     errorMessage: self.errorMessage,
                     onImport: { self.importCurrentURL() },
-                    onGalleryImport: { localURL in await self.importGalleryVideo(localURL: localURL) }
+                    onGalleryImport: { localURL in await self.importGalleryVideo(localURL: localURL) },
+                    onRetryJob: { self.retryJob($0) },
+                    onRemoveJob: { job in
+                        self.importQueue.removeAll { $0.id == job.id }
+                        self.saveQueue()
+                    }
                 )
             case .collections:
                 ReelplayCollectionsScreen(
@@ -643,23 +654,33 @@ struct ReelplayRootView: View {
 
     private func importCurrentURL() {
         let text = self.importText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: text), 📱AppModel.isSupportedReelURL(url) else {
-            self.errorMessage = "Paste a valid Instagram or TikTok reel link."
+        // Support multiple URLs — one per line or space-separated
+        let candidates = text
+            .components(separatedBy: CharacterSet.whitespacesAndNewlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let urls = candidates.compactMap { URL(string: $0) }.filter { 📱AppModel.isSupportedReelURL($0) }
+
+        guard !urls.isEmpty else {
+            self.errorMessage = "Paste one or more valid Instagram or TikTok reel links."
             return
         }
+        self.errorMessage = nil
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-        self.enqueueImport(url: url)
+        self.importText = ""
+        for url in urls {
+            self.enqueueImport(url: url)
+        }
     }
 
     private func enqueueImport(url: URL) {
+        // Deduplicate — skip if URL already queued or processing
+        let urlString = url.absoluteString
+        guard !self.importQueue.contains(where: { $0.url == urlString && $0.status != .failed }) else { return }
         let job = ImportQueueJob.make(url: url)
-        self.importQueue.insert(job, at: 0)
+        self.importQueue.append(job)  // FIFO: append to end so oldest is first
         self.saveQueue()
-        self.importText = ""
         self.app.sharedReelURL = nil
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-            self.selectedTab = .home
-        }
         Task { await self.runQueue() }
     }
 
@@ -686,19 +707,13 @@ struct ReelplayRootView: View {
             withAnimation(.easeInOut(duration: 0.2)) { self.showingQueueProgress = false }
         }
 
-        while let idx = self.importQueue.indices.last(where: { self.importQueue[$0].status == .queued }) {
+        while let idx = self.importQueue.indices.first(where: { self.importQueue[$0].status == .queued }) {
             self.importQueue[idx].status = .processing
             self.importQueueStageIndex = 0
             self.importQueueElapsed = 0
             self.saveQueue()
 
             let job = self.importQueue[idx]
-
-            // Request background execution time so iOS doesn't suspend us mid-import
-            var bgTask = UIBackgroundTaskIdentifier.invalid
-            bgTask = UIApplication.shared.beginBackgroundTask(withName: "rp.import.\(job.id)") {
-                UIApplication.shared.endBackgroundTask(bgTask)
-            }
 
             let animationTask = Task { @MainActor in
                 while !Task.isCancelled {
@@ -719,7 +734,6 @@ struct ReelplayRootView: View {
             guard let url = URL(string: job.url),
                   let profileID = self.currentSocialProfileID else {
                 animationTask.cancel()
-                UIApplication.shared.endBackgroundTask(bgTask)
                 if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
                     self.importQueue[i].status = .failed
                     self.importQueue[i].errorMessage = "Invalid URL or missing profile."
@@ -737,7 +751,6 @@ struct ReelplayRootView: View {
                     reel = await self.processOCRWithTimeout(for: reel)
                 }
                 animationTask.cancel()
-                UIApplication.shared.endBackgroundTask(bgTask)
                 self.reels.removeAll { $0.id == reel.id }
                 self.reels.insert(reel, at: 0)
                 self.importQueue.removeAll { $0.id == job.id }
@@ -745,7 +758,6 @@ struct ReelplayRootView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { self.showingQueueProgress = false }
             } catch {
                 animationTask.cancel()
-                UIApplication.shared.endBackgroundTask(bgTask)
                 if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
                     self.importQueue[i].status = .failed
                     self.importQueue[i].errorMessage = error.localizedDescription
@@ -1304,12 +1316,19 @@ private struct ReelplayHomeScreen: View {
 
 private struct ReelplayImportScreen: View {
     @Binding var importText: String
+    let importQueue: [ImportQueueJob]
     let errorMessage: String?
     let onImport: () -> Void
     let onGalleryImport: (URL) async -> Void
+    var onRetryJob: ((ImportQueueJob) -> Void)? = nil
+    var onRemoveJob: ((ImportQueueJob) -> Void)? = nil
     @State private var selectedSource = "Instagram"
     @State private var galleryItem: PhotosPickerItem?
     @State private var isPickingGallery = false
+
+    private var pendingJobs: [ImportQueueJob] {
+        importQueue.filter { $0.status == .queued || $0.status == .processing || $0.status == .failed }
+    }
 
     var body: some View {
         ScrollView {
@@ -1338,27 +1357,40 @@ private struct ReelplayImportScreen: View {
                     }
                 }
 
-                HStack(spacing: 10) {
-                    TextField(self.placeholder, text: self.$importText)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.subheadline.weight(.medium))
-
-                    #if os(iOS)
-                    Button {
-                        if let text = UIPasteboard.general.string {
-                            self.importText = text
-                        }
-                    } label: {
-                        Image(systemName: "doc.on.clipboard")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(ReelplayTheme.black)
+                ZStack(alignment: .topLeading) {
+                    if importText.isEmpty {
+                        Text(self.placeholder)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(ReelplayTheme.mutedText)
+                            .padding(.top, 16)
+                            .padding(.horizontal, 18)
+                            .allowsHitTesting(false)
                     }
-                    #endif
+                    HStack(alignment: .top, spacing: 10) {
+                        TextEditor(text: self.$importText)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.subheadline.weight(.medium))
+                            .scrollContentBackground(.hidden)
+                            .frame(minHeight: 44, maxHeight: 120)
+
+                        #if os(iOS)
+                        Button {
+                            if let text = UIPasteboard.general.string {
+                                self.importText = text
+                            }
+                        } label: {
+                            Image(systemName: "doc.on.clipboard")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(ReelplayTheme.black)
+                        }
+                        .padding(.top, 12)
+                        #endif
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
-                .padding(.horizontal, 18)
-                .frame(height: 64)
                 .background(ReelplayTheme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
@@ -1430,7 +1462,7 @@ private struct ReelplayImportScreen: View {
                     Image(systemName: "sparkles")
                         .font(.system(size: 22, weight: .bold))
                         .foregroundStyle(Color(hex: 0x9B7A45))
-                    Text("We will analyze the reel and break it down into easy steps.")
+                    Text("Paste one link per line to queue multiple reels at once.")
                         .font(.subheadline.weight(.medium))
                         .foregroundStyle(ReelplayTheme.black.opacity(0.72))
                         .fixedSize(horizontal: false, vertical: true)
@@ -1439,6 +1471,38 @@ private struct ReelplayImportScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(ReelplayTheme.accent.opacity(0.18))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                if !pendingJobs.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Queue")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(ReelplayTheme.black)
+                            Spacer()
+                            let processing = pendingJobs.filter { $0.status == .processing }.count
+                            let queued = pendingJobs.filter { $0.status == .queued }.count
+                            if processing > 0 {
+                                Text("\(processing) processing · \(queued) waiting")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(ReelplayTheme.mutedText)
+                            } else {
+                                Text("\(queued) waiting")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(ReelplayTheme.mutedText)
+                            }
+                        }
+
+                        VStack(spacing: 8) {
+                            ForEach(pendingJobs) { job in
+                                ImportQueueRow(
+                                    job: job,
+                                    onRetry: { onRetryJob?(job) },
+                                    onRemove: { onRemoveJob?(job) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 54)
@@ -1460,6 +1524,94 @@ private struct ReelplayImportScreen: View {
         ImportSource(name: "Instagram", symbol: "camera", color: Color(hex: 0xD96BA8)),
         ImportSource(name: "TikTok", symbol: "music.note", color: ReelplayTheme.black),
     ]
+}
+
+private struct ImportQueueRow: View {
+    let job: ImportQueueJob
+    let onRetry: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            statusIcon
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(job.displayTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(ReelplayTheme.black)
+                    .lineLimit(1)
+
+                Text(statusLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(statusColor)
+            }
+
+            Spacer()
+
+            if job.status == .failed {
+                Button(action: onRetry) {
+                    Text("Retry")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(ReelplayTheme.surface)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(ReelplayTheme.divider))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .opacity(job.status == .processing ? 0 : 1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(ReelplayTheme.divider))
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch job.status {
+        case .processing:
+            ProgressView()
+                .tint(ReelplayTheme.black)
+                .scaleEffect(0.85)
+        case .queued:
+            Image(systemName: "clock")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(ReelplayTheme.mutedText)
+        case .failed:
+            Image(systemName: "exclamationmark.circle")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var statusLabel: String {
+        switch job.status {
+        case .processing: return "Processing…"
+        case .queued: return "In queue"
+        case .failed: return job.errorMessage ?? "Failed"
+        }
+    }
+
+    private var statusColor: Color {
+        switch job.status {
+        case .processing: return ReelplayTheme.black.opacity(0.54)
+        case .queued: return ReelplayTheme.mutedText
+        case .failed: return .red
+        }
+    }
 }
 
 private struct ReelplayCollectionsScreen: View {

@@ -94,14 +94,31 @@ struct ReelService {
     func importReel(url: URL, profileID: UUID) async throws -> ReelItem {
         var request = URLRequest(url: self.baseURL, timeoutInterval: 300)
         request.httpMethod = "POST"
-        request.httpBody = try JSONEncoder().encode([
+        let body = try JSONEncoder().encode([
             "url": url.absoluteString,
             "profile_id": profileID.uuidString,
         ])
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         self.authorize(&request)
 
-        let (data, response) = try await self.session.data(for: request)
+        // Route through background URLSession so the network transfer survives app suspension.
+        // iOS networking daemon holds the connection; when the response arrives iOS wakes the
+        // app and the continuation is resumed — even if the user switched away mid-import.
+        let jobID = UUID()
+        let (response, data) = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URLResponse, Data), Error>) in
+            do {
+                try ReelBackgroundSession.shared.scheduleUpload(
+                    request: request,
+                    body: body,
+                    jobID: jobID
+                ) { result in
+                    continuation.resume(with: result)
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+
         try self.validate(response: response, data: data)
         return try Self.decoder.decode(ReelDetailResponse.self, from: data).reel
     }
