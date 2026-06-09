@@ -870,6 +870,7 @@ async function regenerateAiOverview(reel: Record<string, unknown>) {
     caption: typeof reel.caption === "string" ? reel.caption : null,
     duration_seconds: typeof reel.duration_seconds === "number" ? reel.duration_seconds : null,
     video_url: typeof reel.video_url === "string" ? reel.video_url : null,
+    media_items: Array.isArray(reel.media_items) ? reel.media_items as MediaItem[] : undefined,
     ocr_entries: ocrEntries.length > 0 ? ocrEntries : undefined,
     transcript: transcript.length > 0 ? transcript : null,
   };
@@ -889,6 +890,24 @@ async function regenerateAiOverview(reel: Record<string, unknown>) {
       ai_overview: summary.ai_overview,
     })
     .eq("id", reelId);
+
+  const segments = normalizeSegments(summary.segments, input);
+  if (segments.length > 0) {
+    await supabase.from("reel_segments").delete().eq("reel_id", reelId);
+    await supabase.from("reel_segments").upsert(
+      segments.map((segment, index) => ({
+        reel_id: reelId,
+        start_seconds: clampInt(segment.start_seconds, 0),
+        end_seconds: clampInt(segment.end_seconds, clampInt(segment.start_seconds, 0) + 1),
+        title: segment.title,
+        description: segment.description,
+        raw_text: segment.raw_text ?? null,
+        tags: segment.tags,
+        order_index: index,
+      })),
+      { onConflict: "reel_id,order_index" },
+    );
+  }
 }
 
 async function importReel(sourceUrl: string, profileId: string) {
@@ -1436,6 +1455,21 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
     .map(([type, schema]) => `If category="${type}":\n${schema}`)
     .join("\n\n");
 
+  // For image slideshows, read slide content via vision — iOS OCR can get bad
+  // results from TikTok CDN at import time, but server-side URLs are always fresh.
+  // Strip ocr_entries from the text prompt so stale caption-based OCR doesn't
+  // contradict what the model reads from the actual slide images.
+  const slideItems = Array.isArray(input.media_items) && !input.video_url
+    ? (input.media_items as Record<string, unknown>[])
+        .slice(0, 15)
+        .map(m => stringValue(m.thumbnail_url) ?? stringValue(m.url))
+        .filter((u): u is string => !!u)
+    : [];
+
+  const inputForPrompt = slideItems.length > 0
+    ? { ...input, ocr_entries: undefined }
+    : input;
+
   const promptContent = [
     "Convert this short-form video into a structured note. Return strict JSON with these top-level keys: title, category, summary, segments, ai_overview.",
     "",
@@ -1467,8 +1501,21 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
     allSchemasText,
     "",
     "=== INPUT DATA ===",
-    JSON.stringify(input),
+    JSON.stringify(inputForPrompt),
   ].join("\n");
+
+  const userMessageContent: unknown = slideItems.length > 0
+    ? [
+        {
+          type: "text",
+          text: promptContent + "\n\nIMPORTANT: The slide images below are the PRIMARY source of truth. Read the exact text, place names, labels, and descriptions directly from each slide image. Extract one entry per slide.",
+        },
+        ...slideItems.map(url => ({
+          type: "image_url",
+          image_url: { url, detail: "low" },
+        })),
+      ]
+    : promptContent;
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -1477,13 +1524,13 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: openAIModel,
+      model: slideItems.length > 0 ? "gpt-4o-mini" : openAIModel,
       messages: [
         {
           role: "system",
           content: "You are a structured content extractor for a reel-saving app. Extract only what is explicitly present in the input data. Respond with valid JSON only. Never invent content or write generic summaries — every item must trace back to a specific moment in the transcript, OCR, or caption.",
         },
-        { role: "user", content: promptContent },
+        { role: "user", content: userMessageContent },
       ],
       response_format: { type: "json_object" },
       temperature: 0.1,

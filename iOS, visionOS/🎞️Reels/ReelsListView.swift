@@ -5748,6 +5748,8 @@ private struct ReelProcessingErrorState: View {
     }
 }
 
+private enum SheetDetent: Equatable { case half, full }
+
 private struct ReelSummaryView: View {
     let reel: ReelItem
     let isBookmarked: Bool
@@ -5767,6 +5769,9 @@ private struct ReelSummaryView: View {
     @State private var focusedOCRID: UUID?
     @State private var showRetryConfirmation = false
     @State private var isShowingFullscreenVideo = false
+    @State private var isShowingCarouselFullscreen = false
+    @State private var carouselSlideIndex: Int = 0
+    @State private var sheetDetent: SheetDetent = .half
     @State private var expandDragTranslation: CGFloat = 0
     @State private var canExpandFromCurrentDrag = false
     @State private var fullscreenCollapseProgress: CGFloat = 0
@@ -5825,7 +5830,15 @@ private struct ReelSummaryView: View {
         return self.segments.first
     }
 
-    private var heroHeight: CGFloat { 372 }
+    private var heroHeight: CGFloat {
+        let isCarousel = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+        guard isCarousel else { return 372 }
+        // Use 4:5 container so a standard IG carousel slide fills both width and height.
+        // Cap at 58% of screen height to leave room for the tab content below.
+        let screenWidth = UIScreen.main.bounds.width
+        let screenHeight = UIScreen.main.bounds.height
+        return min(screenWidth * 5 / 4, screenHeight * 0.58)
+    }
 
     private var dynamicTabs: [AiTab] {
         if let tabs = reel.aiOverview?.tabs, !tabs.isEmpty {
@@ -5852,10 +5865,44 @@ private struct ReelSummaryView: View {
 
     var body: some View {
         ZStack {
-            ReelplayTheme.background
-                .ignoresSafeArea()
+            Color.black
+                .ignoresSafeArea(edges: .top)
 
-            ScrollView {
+            // Hero — fixed behind the sheet
+            VStack(spacing: 0) {
+                ReelSummaryHero(
+                    reel: self.reel,
+                    player: self.playback.player,
+                    currentSeconds: self.playback.currentSeconds,
+                    durationSeconds: self.playback.durationSeconds ?? Double(self.reel.durationSeconds ?? 0),
+                    isPlaying: self.playback.isPlaying,
+                    expandProgress: 0,
+                    activeSegment: self.focusedSegmentID.flatMap { id in self.segments.first { $0.id == id } } ?? self.segments.first,
+                    slideIndex: self.$carouselSlideIndex,
+                    onSeek: { self.playback.seek(to: $0) },
+                    onTogglePlayPause: { self.playback.togglePlayPause() },
+                    onOpenFullscreen: { self.openFullscreenVideo() }
+                )
+                .frame(height: self.heroHeight)
+                .contentShape(Rectangle())
+                Spacer()
+            }
+            .ignoresSafeArea(edges: .top)
+            .zIndex(1)
+
+            // Sheet — slides over the hero
+            VStack(spacing: 0) {
+                Color.clear.frame(height: self.sheetTopY).allowsHitTesting(false)
+                VStack(spacing: 0) {
+                    // Drag handle
+                    Capsule()
+                        .fill(Color(uiColor: .systemFill))
+                        .frame(width: 36, height: 4)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .gesture(self.dragHandleGesture())
+                    ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     GeometryReader { proxy in
                         Color.clear
@@ -6024,12 +6071,11 @@ private struct ReelSummaryView: View {
                         }
                     }
                 }
-                .padding(.top, self.attachedContentTopHeight)
                 .padding(.bottom, 30)
             }
             .coordinateSpace(name: "ReelSummaryScroll")
             .scrollIndicators(.hidden)
-            .scrollDisabled(self.expandDragTranslation > 0 || self.isShowingFullscreenVideo)
+            .scrollDisabled(self.expandDragTranslation != 0 || self.isShowingFullscreenVideo)
             .reelplayScrollOffsetReader(
                 offsetY: self.$contentOffsetY,
                 restingTopY: self.$contentRestingTopY
@@ -6044,29 +6090,16 @@ private struct ReelSummaryView: View {
             .onChange(of: self.contentOffsetY) { _, offset in
                 self.updateTopPullArming(for: offset)
             }
-            .simultaneousGesture(self.expandFromContentSwipe())
-
-            VStack(spacing: 0) {
-                ReelSummaryHero(
-                    reel: self.reel,
-                    player: self.playback.player,
-                    currentSeconds: self.playback.currentSeconds,
-                    durationSeconds: self.playback.durationSeconds ?? Double(self.reel.durationSeconds ?? 0),
-                    isPlaying: self.playback.isPlaying,
-                    expandProgress: self.expandDragProgress,
-                    activeSegment: self.focusedSegmentID.flatMap { id in self.segments.first { $0.id == id } } ?? self.segments.first,
-                    onSeek: { self.playback.seek(to: $0) },
-                    onTogglePlayPause: { self.playback.togglePlayPause() },
-                    onOpenFullscreen: { self.openFullscreenVideo() }
-                )
-                .frame(height: self.interactiveHeroHeight)
-                .contentShape(Rectangle())
-                .simultaneousGesture(self.expandVideoSwipe())
-                .shadow(color: .black.opacity(self.expandDragProgress * 0.22), radius: 26 * self.expandDragProgress, y: 16 * self.expandDragProgress)
-
-                Spacer()
+            .simultaneousGesture(self.sheetCollapseGesture())
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .ignoresSafeArea(edges: .bottom)
+                .background(ReelplayTheme.background)
+                .clipShape(UnevenRoundedRectangle(cornerRadii: .init(topLeading: 20, topTrailing: 20)))
             }
-            .ignoresSafeArea(edges: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .ignoresSafeArea(edges: .bottom)
+            .zIndex(3)
 
             VStack {
                 HStack {
@@ -6120,6 +6153,7 @@ private struct ReelSummaryView: View {
 
                 Spacer()
             }
+            .zIndex(5)
 
             if self.isShowingFullscreenVideo {
                 ReelFullscreenVideoView(
@@ -6197,18 +6231,39 @@ private struct ReelSummaryView: View {
         }
         .ignoresSafeArea(edges: .top)
         .background(ReelplayTheme.background)
+        .fullScreenCover(isPresented: self.$isShowingCarouselFullscreen) {
+            ReelCarouselFullscreenView(reel: self.reel, initialIndex: self.carouselSlideIndex)
+        }
         .onAppear {
             Task {
                 await self.playback.prepareAndPlayNormally()
             }
         }
-        .onChange(of: self.focusedSegmentID) { _, _ in
+        .onChange(of: self.focusedSegmentID) { _, newID in
+            // Keep carousel slide in sync when a segment is tapped in the list
+            if let newID, let seg = self.segments.first(where: { $0.id == newID }) {
+                let sorted = (self.reel.mediaItems ?? []).sorted { $0.orderIndex < $1.orderIndex }
+                if !sorted.isEmpty {
+                    self.carouselSlideIndex = min(seg.orderIndex, sorted.count - 1)
+                }
+            }
             Task {
                 if let focusedSegmentID,
                    let focusedSegment = self.segments.first(where: { $0.id == focusedSegmentID }) {
                     await self.playback.prepareAndPlay(focusedSegment)
                 } else {
                     await self.playback.prepareAndPlayNormally()
+                }
+            }
+        }
+        .onChange(of: self.carouselSlideIndex) { _, newIndex in
+            // Keep focused segment in sync when user swipes slides
+            let sorted = self.segments.sorted { $0.orderIndex < $1.orderIndex }
+            let seg = sorted.first(where: { $0.orderIndex == newIndex })
+                ?? (sorted.indices.contains(newIndex) ? sorted[newIndex] : nil)
+            if let seg, self.focusedSegmentID != seg.id {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                    self.focusedSegmentID = seg.id
                 }
             }
         }
@@ -6223,19 +6278,20 @@ private struct ReelSummaryView: View {
         min(max(self.expandDragTranslation / 260, 0), 1)
     }
 
-    private var interactiveHeroHeight: CGFloat {
-        let screenHeight = UIScreen.main.bounds.height
-        return self.heroHeight + (screenHeight - self.heroHeight) * self.expandDragProgress
+    private var halfDetentY: CGFloat { self.heroHeight }
+
+    private var fullDetentY: CGFloat { UIApplication.shared.reelplayTopSafeArea + 10 }
+
+    private var sheetTopY: CGFloat {
+        let base: CGFloat = self.sheetDetent == .full ? self.fullDetentY : self.halfDetentY
+        let raw = base + self.expandDragTranslation
+        let screenH = UIScreen.main.bounds.height
+        return min(screenH - 80, max(self.fullDetentY, raw))
     }
 
-    private var attachedContentTopHeight: CGFloat {
-        let screenHeight = UIScreen.main.bounds.height
-        if self.isShowingFullscreenVideo {
-            return screenHeight - ((screenHeight - self.heroHeight) * self.fullscreenCollapseProgress)
-        }
+    private var interactiveHeroHeight: CGFloat { self.heroHeight }
 
-        return self.interactiveHeroHeight
-    }
+    private var attachedContentTopHeight: CGFloat { self.heroHeight }
 
     private var isContentScrolledToTop: Bool {
         self.contentOffsetY <= 1
@@ -6281,52 +6337,72 @@ private struct ReelSummaryView: View {
         }
     }
 
-    private func expandVideoSwipe() -> some Gesture {
-        DragGesture(minimumDistance: 3, coordinateSpace: .global)
+    private func dragHandleGesture() -> some Gesture {
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
             .onChanged { value in
-                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.2
-                let draggingDown = value.translation.height > 0
-                guard mostlyVertical, draggingDown else { return }
-                self.expandDragTranslation = max(0, value.translation.height)
+                self.expandDragTranslation = value.translation.height
             }
             .onEnded { value in
-                let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
-                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
-                if movedDown, mostlyVertical {
-                    self.completeDragToFullscreen()
-                } else {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                let translation = value.translation.height
+                let predicted = value.predictedEndTranslation.height
+                if self.sheetDetent == .half {
+                    if translation < -50 || predicted < -100 {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                            self.sheetDetent = .full
+                            self.expandDragTranslation = 0
+                        }
+                    } else if translation > 60 || predicted > 120 {
                         self.expandDragTranslation = 0
+                        self.completeDragToFullscreen()
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                            self.expandDragTranslation = 0
+                        }
+                    }
+                } else {
+                    if translation > 60 || predicted > 120 {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                            self.sheetDetent = .half
+                            self.expandDragTranslation = 0
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                            self.expandDragTranslation = 0
+                        }
                     }
                 }
             }
     }
 
-    private func expandFromContentSwipe() -> some Gesture {
+    private func sheetCollapseGesture() -> some Gesture {
         DragGesture(minimumDistance: 3, coordinateSpace: .global)
             .onChanged { value in
+                let translation = value.translation.height
+                let mostlyVertical = abs(translation) > abs(value.translation.width) * 1.2
+                guard mostlyVertical, translation > 0, self.isContentScrolledToTop else { return }
                 self.startExpandDragIfNeeded()
-                guard self.canStartOrContinueExpandDrag(value) else { return }
-                self.expandDragTranslation = max(0, value.translation.height)
+                guard self.lockedCanExpandForThisDrag else { return }
+                self.expandDragTranslation = translation
             }
             .onEnded { value in
-                let mostlyVertical = abs(value.translation.height) > abs(value.translation.width) * 1.35
-                let movedDown = value.translation.height > 72 || value.predictedEndTranslation.height > 140
-                let canComplete = self.canExpandFromCurrentDrag && self.lockedCanExpandForThisDrag && mostlyVertical
+                let translation = value.translation.height
+                let predicted = value.predictedEndTranslation.height
+                let movedDown = translation > 72 || predicted > 140
                 self.resetExpandDragSession()
-                guard canComplete else {
+                guard movedDown, self.isContentScrolledToTop else {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
                         self.expandDragTranslation = 0
                     }
                     return
                 }
-
-                if movedDown {
-                    self.completeDragToFullscreen()
-                } else {
+                if self.sheetDetent == .full {
                     withAnimation(.spring(response: 0.32, dampingFraction: 0.88)) {
+                        self.sheetDetent = .half
                         self.expandDragTranslation = 0
                     }
+                } else {
+                    self.expandDragTranslation = 0
+                    self.completeDragToFullscreen()
                 }
             }
     }
@@ -6385,6 +6461,15 @@ private struct ReelSummaryView: View {
     }
 
     private func completeDragToFullscreen() {
+        let isCarousel = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+        if isCarousel {
+            withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.92)) {
+                self.expandDragTranslation = 0
+            }
+            self.isShowingCarouselFullscreen = true
+            return
+        }
+
         withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.92)) {
             self.expandDragTranslation = 260
         }
@@ -6447,17 +6532,27 @@ private struct ReelSummaryView: View {
     }
 
     private func openFullscreenVideo() {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
-            self.isShowingFullscreenVideo = true
+        let isCarousel = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+        if isCarousel {
+            self.isShowingCarouselFullscreen = true
+        } else {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+                self.isShowingFullscreenVideo = true
+            }
         }
     }
 
     private func openSegmentVideo(_ segment: ReelSegment) {
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-            self.focusedSegmentID = segment.id
-            self.isShowingFullscreenVideo = true
+        let isCarousel = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+        if isCarousel {
+            self.isShowingCarouselFullscreen = true
+        } else {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                self.focusedSegmentID = segment.id
+                self.isShowingFullscreenVideo = true
+            }
+            self.playback.play(segment)
         }
-        self.playback.play(segment)
     }
 
     @ViewBuilder
@@ -6990,17 +7085,20 @@ private struct ReelSummaryHero: View {
     let isPlaying: Bool
     let expandProgress: CGFloat
     let activeSegment: ReelSegment?
+    @Binding var slideIndex: Int
     let onSeek: (Double) -> Void
     let onTogglePlayPause: () -> Void
     let onOpenFullscreen: () -> Void
 
+    private var sortedMediaItems: [ReelMediaItem] {
+        (self.reel.mediaItems ?? []).sorted { $0.orderIndex < $1.orderIndex }
+    }
+
     private var activeSlideItem: ReelMediaItem? {
-        guard self.reel.videoURL == nil,
-              let mediaItems = self.reel.mediaItems,
-              !mediaItems.isEmpty,
-              let segment = self.activeSegment else { return nil }
-        let sorted = mediaItems.sorted { $0.orderIndex < $1.orderIndex }
-        return sorted[min(segment.orderIndex, sorted.count - 1)]
+        guard self.reel.videoURL == nil else { return nil }
+        let sorted = self.sortedMediaItems
+        guard !sorted.isEmpty else { return nil }
+        return sorted[min(self.slideIndex, sorted.count - 1)]
     }
 
     private var slideImageURL: URL? {
@@ -7036,19 +7134,45 @@ private struct ReelSummaryHero: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                                 .id(videoURL.absoluteString)
                         } else {
-                            let isSlide = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
-                            ZStack {
-                                CachedRemoteImage(url: self.reel.displayThumbnailURL) { Color.black }
-                                    .blur(radius: 20)
-                                    .opacity(0.5)
-                                CachedRemoteImage(
-                                    url: self.slideImageURL ?? self.reel.displayThumbnailURL,
-                                    contentMode: isSlide ? .fit : .fill
-                                ) { Color.clear }
+                            let isSlide = self.reel.videoURL == nil
+                            if isSlide {
+                                // Carousel: fill the full hero width so nothing appears cropped.
+                                // The 9/16 frame calculation is designed for video and makes images
+                                // appear in a narrow strip with black on both sides.
+                                let items = self.sortedMediaItems
+                                TabView(selection: self.$slideIndex) {
+                                    ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                                        let imgURL = item.thumbnailURL ?? (item.type == "image" ? item.url : nil)
+                                        ZStack {
+                                            CachedRemoteImage(url: imgURL ?? self.reel.displayThumbnailURL) { Color.black }
+                                                .blur(radius: 20)
+                                                .scaleEffect(1.06)
+                                            CachedRemoteImage(
+                                                url: imgURL ?? self.reel.displayThumbnailURL,
+                                                contentMode: .fit
+                                            ) { Color.clear }
+                                        }
+                                        .frame(width: proxy.size.width, height: proxy.size.height)
+                                        .clipped()
+                                        .tag(idx)
+                                    }
+                                }
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                .frame(width: proxy.size.width, height: proxy.size.height)
+                            } else {
+                                ZStack {
+                                    CachedRemoteImage(url: self.reel.displayThumbnailURL) { Color.black }
+                                        .blur(radius: 20)
+                                        .opacity(0.5)
+                                    CachedRemoteImage(
+                                        url: self.slideImageURL ?? self.reel.displayThumbnailURL,
+                                        contentMode: .fill
+                                    ) { Color.clear }
+                                }
+                                .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
+                                .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                             }
-                            .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
-                            .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                         }
                     }
                     .frame(width: proxy.size.width, height: proxy.size.height)
@@ -7065,6 +7189,21 @@ private struct ReelSummaryHero: View {
             .opacity(1 - min(self.expandProgress, 0.9))
 
             VStack {
+                if self.reel.videoURL == nil, self.sortedMediaItems.count > 1 {
+                    HStack {
+                        Spacer()
+                        Text("\(self.slideIndex + 1) / \(self.sortedMediaItems.count)")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.black.opacity(0.4))
+                            .clipShape(Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, UIApplication.shared.reelplayTopSafeArea + 8)
+                }
+
                 Spacer()
 
                 VStack(spacing: 8) {
@@ -8250,6 +8389,78 @@ private extension View {
     }
 }
 
+private struct ReelCarouselFullscreenView: View {
+    let reel: ReelItem
+    @Environment(\.dismiss) private var dismiss
+    @State private var pageIndex: Int
+
+    init(reel: ReelItem, initialIndex: Int = 0) {
+        self.reel = reel
+        self._pageIndex = State(initialValue: initialIndex)
+    }
+
+    private var imageURLs: [URL] {
+        (self.reel.mediaItems ?? [])
+            .sorted { $0.orderIndex < $1.orderIndex }
+            .compactMap { item in
+                item.thumbnailURL ?? (item.type == "image" ? item.url : nil)
+            }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                TabView(selection: self.$pageIndex) {
+                    ForEach(Array(self.imageURLs.enumerated()), id: \.offset) { index, url in
+                        ZStack {
+                            CachedRemoteImage(url: url) { Color.black }
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .blur(radius: 22)
+                                .scaleEffect(1.12)
+                                .clipped()
+                            CachedRemoteImage(url: url) { Color.clear }
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: geo.size.width)
+                        }
+                        .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .ignoresSafeArea()
+
+                VStack {
+                    HStack {
+                        Button { self.dismiss() } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 42, height: 42)
+                                .background(.black.opacity(0.36))
+                                .clipShape(Circle())
+                        }
+                        Spacer()
+                        if self.imageURLs.count > 1 {
+                            Text("\(self.pageIndex + 1) / \(self.imageURLs.count)")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(.black.opacity(0.4))
+                                .clipShape(Capsule())
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, UIApplication.shared.reelplayTopSafeArea + 8)
+                    Spacer()
+                }
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
 private extension ReelSegment {
     var timeRangeText: String {
         "\(SegmentPageView.format(self.startSeconds)) - \(SegmentPageView.format(self.endSeconds))"
@@ -8311,15 +8522,19 @@ private struct SegmentPageView: View {
                 SlideVideoPlayer(url: videoURL, thumbnailURL: self.slideImageURL)
                     .ignoresSafeArea()
             } else {
-                let isSlide = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
+                // For image-only reels (no videoURL), always use .fit so the full
+                // image is visible without left/right cropping. Video thumbnail
+                // previews use .fill to fill the 9:16 frame.
+                let isImageContent = self.reel.videoURL == nil
+                let displayURL = self.slideImageURL ?? self.reel.displayThumbnailURL
                 ZStack {
-                    CachedRemoteImage(url: self.reel.displayThumbnailURL) { Color.black }
+                    CachedRemoteImage(url: displayURL) { Color.black }
                         .ignoresSafeArea()
-                        .blur(radius: 24)
-                        .opacity(0.55)
+                        .blur(radius: 28)
+                        .scaleEffect(1.08)
                     CachedRemoteImage(
-                        url: self.slideImageURL ?? self.reel.displayThumbnailURL,
-                        contentMode: isSlide ? .fit : .fill
+                        url: displayURL,
+                        contentMode: isImageContent ? .fit : .fill
                     ) { Color.clear }
                         .ignoresSafeArea()
                 }
