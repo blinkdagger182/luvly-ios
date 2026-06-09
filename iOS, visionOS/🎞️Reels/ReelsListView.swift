@@ -5655,6 +5655,29 @@ private struct ReelSummaryView: View {
 
     private var heroHeight: CGFloat { 372 }
 
+    private var dynamicTabs: [AiTab] {
+        if let tabs = reel.aiOverview?.tabs, !tabs.isEmpty {
+            return tabs
+        }
+        return [
+            AiTab(id: "guide", label: reel.intentType.primaryTabName),
+            AiTab(id: "transcript", label: "Voice"),
+            AiTab(id: "screen_text", label: "Screen"),
+        ]
+    }
+
+    private func sectionsForTab(_ tab: AiTab, in overview: AiOverview) -> [AiOverviewSection] {
+        // New format: sections have tab_id
+        let filtered = overview.sections.filter { $0.tabId == tab.id }
+        if !filtered.isEmpty { return filtered }
+        // Old format: no tab_id — show all sections on the first non-raw tab
+        let rawIds: Set<String> = ["transcript", "voice", "screen_text", "screen"]
+        if !rawIds.contains(tab.id) {
+            return overview.sections.filter { $0.tabId == nil }
+        }
+        return []
+    }
+
     var body: some View {
         ZStack {
             ReelplayTheme.background
@@ -5679,9 +5702,13 @@ private struct ReelSummaryView: View {
                                 .lineLimit(3)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            HStack(spacing: 8) {
-                                Text(self.reel.creatorUsername.map { "@\($0)" } ?? self.reel.source.capitalized)
+                            HStack(spacing: 6) {
+                                ReelIntentBadge(intentType: self.reel.intentType)
                                 Text("•")
+                                    .foregroundStyle(ReelplayTheme.black.opacity(0.28))
+                                Text(self.reel.creatorUsername.map { "@\($0)" } ?? self.reel.source.capitalized)
+                                Text("·")
+                                    .foregroundStyle(ReelplayTheme.black.opacity(0.28))
                                 Text(self.reel.source.capitalized)
                             }
                             .font(.caption.weight(.semibold))
@@ -5702,23 +5729,47 @@ private struct ReelSummaryView: View {
                     }
                     .padding(.horizontal, 20)
 
-                    Picker("", selection: self.$selectedTab) {
-                        Text("Steps").tag(0)
-                        Text("Voice").tag(1)
-                        Text("Screen").tag(2)
-                    }
-                    .pickerStyle(.segmented)
-                    .padding(.horizontal, 20)
-                    .onChange(of: self.selectedTab) { _, _ in
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                            self.focusedTranscriptID = nil
-                            self.focusedOCRID = nil
-                            self.focusedSegmentID = nil
-                            self.expandedSegmentID = nil
+                    ReelDynamicTabBar(tabs: self.dynamicTabs, selectedIndex: self.$selectedTab)
+                        .padding(.horizontal, 20)
+                        .onChange(of: self.selectedTab) { _, _ in
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                self.focusedTranscriptID = nil
+                                self.focusedOCRID = nil
+                                self.focusedSegmentID = nil
+                                self.expandedSegmentID = nil
+                            }
                         }
-                    }
 
-                    if self.selectedTab == 0 {
+                    let currentTab = self.dynamicTabs[min(self.selectedTab, self.dynamicTabs.count - 1)]
+
+                    switch currentTab.id {
+                    case "transcript", "voice":
+                        ReelVoiceTab(
+                            reel: self.reel,
+                            transcriptSegments: self.reel.transcriptSegments,
+                            focusedID: self.focusedTranscriptID,
+                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
+                            onSelect: { segment in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    self.focusedTranscriptID = self.focusedTranscriptID == segment.id ? nil : segment.id
+                                }
+                                self.playback.seek(to: segment.startSeconds)
+                            }
+                        )
+                    case "screen_text", "screen":
+                        ReelScreenTab(
+                            reel: self.reel,
+                            ocrEntries: self.reel.ocrEntries,
+                            focusedID: self.focusedOCRID,
+                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
+                            onSelect: { entry in
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                                    self.focusedOCRID = self.focusedOCRID == entry.id ? nil : entry.id
+                                }
+                                self.playback.seek(to: Double(entry.timestampSeconds))
+                            }
+                        )
+                    default:
                         if self.reel.hasProcessingError {
                             ReelProcessingErrorState(
                                 errorMessage: self.reel.errorMessage,
@@ -5736,6 +5787,46 @@ private struct ReelSummaryView: View {
                             } message: {
                                 Text("Reelplay will re-analyse the video. This may take up to a minute.")
                             }
+                        } else if let overview = self.reel.aiOverview {
+                            let tabSections = self.sectionsForTab(currentTab, in: overview)
+                            AiOverviewSectionsView(
+                                summary: overview.summary,
+                                confidence: overview.confidence,
+                                sections: tabSections
+                            )
+                            .padding(.horizontal, 20)
+                            .padding(.top, 4)
+
+                            if !self.segments.isEmpty {
+                                Text("Watch Moments")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(ReelplayTheme.black)
+                                    .padding(.horizontal, 20)
+                                    .padding(.top, 20)
+                                    .padding(.bottom, 4)
+
+                                VStack(spacing: 0) {
+                                    ForEach(self.segments) { segment in
+                                        SegmentSummaryRow(
+                                            reel: self.reel,
+                                            segment: segment,
+                                            isFocused: self.focusedSegmentID == segment.id,
+                                            isExpanded: self.expandedSegmentID == segment.id,
+                                            shouldLoadThumbnail: self.playback.canLoadSecondaryAssets,
+                                            previousTitle: self.previousSegment(for: segment)?.title,
+                                            nextTitle: self.nextSegment(for: segment)?.title,
+                                            onPlaySegmentVideo: { self.openSegmentVideo(segment) },
+                                            onSelectSegment: { self.selectSegment(segment) },
+                                            onToggleExpanded: { self.toggleSegment(segment) },
+                                            onPrevious: { self.selectAdjacentSegment(from: segment, direction: -1) },
+                                            onNext: { self.selectAdjacentSegment(from: segment, direction: 1) }
+                                        )
+                                    }
+                                }
+                            }
+                            self.signalBadge
+                                .padding(.horizontal, 20)
+                                .padding(.top, 8)
                         } else {
                             VStack(spacing: 0) {
                                 ForEach(self.segments) { segment in
@@ -5759,32 +5850,6 @@ private struct ReelSummaryView: View {
                                 .padding(.horizontal, 20)
                                 .padding(.top, 8)
                         }
-                    } else if self.selectedTab == 1 {
-                        ReelVoiceTab(
-                            reel: self.reel,
-                            transcriptSegments: self.reel.transcriptSegments,
-                            focusedID: self.focusedTranscriptID,
-                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
-                            onSelect: { segment in
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                                    self.focusedTranscriptID = self.focusedTranscriptID == segment.id ? nil : segment.id
-                                }
-                                self.playback.seek(to: segment.startSeconds)
-                            }
-                        )
-                    } else {
-                        ReelScreenTab(
-                            reel: self.reel,
-                            ocrEntries: self.reel.ocrEntries,
-                            focusedID: self.focusedOCRID,
-                            canLoadThumbnail: self.playback.canLoadSecondaryAssets,
-                            onSelect: { entry in
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                                    self.focusedOCRID = self.focusedOCRID == entry.id ? nil : entry.id
-                                }
-                                self.playback.seek(to: Double(entry.timestampSeconds))
-                            }
-                        )
                     }
                 }
                 .padding(.top, self.attachedContentTopHeight)
@@ -6248,6 +6313,284 @@ private struct ReelSummaryView: View {
                 .overlay(Capsule().stroke(ReelplayTheme.divider))
             }
         }
+    }
+}
+
+private struct ReelDynamicTabBar: View {
+    let tabs: [AiTab]
+    @Binding var selectedIndex: Int
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(Array(tabs.enumerated()), id: \.offset) { index, tab in
+                    Button {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                            selectedIndex = index
+                        }
+                    } label: {
+                        Text(tab.label)
+                            .font(.subheadline.weight(selectedIndex == index ? .bold : .medium))
+                            .foregroundStyle(selectedIndex == index ? ReelplayTheme.black : ReelplayTheme.mutedText)
+                            .padding(.horizontal, 2)
+                            .frame(height: 40)
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(selectedIndex == index ? ReelplayTheme.black : .clear)
+                                    .frame(height: 2)
+                            }
+                    }
+                    .buttonStyle(.plain)
+
+                    if index < tabs.count - 1 {
+                        Spacer().frame(width: 20)
+                    }
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+}
+
+private struct AiOverviewSectionsView: View {
+    let summary: String
+    let confidence: String?
+    let sections: [AiOverviewSection]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if !summary.isEmpty {
+                Text(summary)
+                    .font(.subheadline)
+                    .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 2)
+            }
+
+            ForEach(sections, id: \.id) { section in
+                let sectionType = section.type ?? "key_points"
+                if sectionType == "steps" {
+                    AiStepsSectionCard(section: section)
+                } else if sectionType == "quick_answer" {
+                    AiQuickAnswerCard(section: section)
+                } else {
+                    AiKeyValueSectionCard(section: section)
+                }
+            }
+
+            if confidence == "low" {
+                HStack(spacing: 5) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.caption2.weight(.semibold))
+                    Text("Limited signal — overview may be incomplete")
+                        .font(.caption2.weight(.medium))
+                }
+                .foregroundStyle(ReelplayTheme.black.opacity(0.42))
+                .padding(.top, 2)
+            }
+        }
+    }
+}
+
+// Quick Answer: 2-column label/value — e.g. Goal / Tool / Best for
+private struct AiQuickAnswerCard: View {
+    let section: AiOverviewSection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(section.items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .top, spacing: 12) {
+                    Text(item.label ?? "")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.48))
+                        .frame(width: 90, alignment: .leading)
+
+                    Text(item.value ?? "")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer()
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .overlay(alignment: .bottom) {
+                    if index < section.items.count - 1 {
+                        Divider().padding(.leading, 14)
+                    }
+                }
+            }
+        }
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
+    }
+}
+
+// Steps: numbered vertical cards with title + body + optional timestamp
+private struct AiStepsSectionCard: View {
+    let section: AiOverviewSection
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.84)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Text(section.title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.42))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(section.items.enumerated()), id: \.offset) { index, item in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(index + 1)")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(ReelplayTheme.black.opacity(0.38))
+                                .frame(width: 20, alignment: .center)
+                                .padding(.top, 1)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(item.title ?? item.label ?? "")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(ReelplayTheme.black)
+
+                                if let body = item.body, !body.isEmpty {
+                                    Text(body)
+                                        .font(.subheadline)
+                                        .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                if let ts = item.timestamp, !ts.isEmpty {
+                                    Text(ts)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(ReelplayTheme.black.opacity(0.36))
+                                        .padding(.top, 2)
+                                }
+                            }
+
+                            Spacer()
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .overlay(alignment: .bottom) {
+                            if index < section.items.count - 1 {
+                                Divider().padding(.leading, 46)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
+    }
+}
+
+// Key-value: ingredients, exercises, places, tools etc.
+private struct AiKeyValueSectionCard: View {
+    let section: AiOverviewSection
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.84)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Text(section.title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(ReelplayTheme.black)
+                    Spacer()
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.42))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(section.items.enumerated()), id: \.offset) { index, item in
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(item.label ?? item.title ?? "")
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(ReelplayTheme.black)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Spacer()
+
+                                if let value = item.value ?? item.body, !value.isEmpty {
+                                    Text(value)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(ReelplayTheme.black.opacity(0.56))
+                                        .multilineTextAlignment(.trailing)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+
+                            if let note = item.note, !note.isEmpty {
+                                Text(note)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(ReelplayTheme.black.opacity(0.44))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .overlay(alignment: .bottom) {
+                            if index < section.items.count - 1 {
+                                Divider().padding(.leading, 14)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .background(ReelplayTheme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ReelplayTheme.divider))
+    }
+}
+
+private struct ReelIntentBadge: View {
+    let intentType: ReelIntentType
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: intentType.symbolName)
+                .font(.caption2.weight(.bold))
+            Text(intentType.displayName)
+                .font(.caption.weight(.bold))
+        }
+        .foregroundStyle(ReelplayTheme.black.opacity(0.72))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(ReelplayTheme.surface)
+        .clipShape(Capsule())
+        .overlay(Capsule().stroke(ReelplayTheme.divider))
     }
 }
 

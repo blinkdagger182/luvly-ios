@@ -26,11 +26,45 @@ type MediaItem = {
   order_index: number;
 };
 
+type AiTab = {
+  id: string;
+  label: string;
+};
+
+// key-value items (quick_answer, tools, ingredients, exercises, places, etc.)
+// step items use title + body + optional timestamp
+type AiOverviewItem = {
+  label?: string;
+  value?: string;
+  note?: string;
+  title?: string;
+  body?: string;
+  timestamp?: string;
+};
+
+type AiOverviewSection = {
+  id: string;
+  tab_id: string;
+  type: string; // "quick_answer" | "steps" | "key_points" | "tools" | "ingredients" | etc.
+  title: string;
+  items: AiOverviewItem[];
+};
+
+type AiOverview = {
+  type: string;
+  title: string;
+  summary: string;
+  confidence: string;
+  tabs: AiTab[];
+  sections: AiOverviewSection[];
+};
+
 type ReelSummary = {
   title: string;
   category: string;
   summary: string;
   segments: Segment[];
+  ai_overview?: AiOverview;
 };
 
 type TranscriptSegment = {
@@ -777,6 +811,7 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
       title: summary.title,
       category: summary.category,
       summary: summary.summary,
+      ai_overview: summary.ai_overview ?? null,
       reel_type: signal.reelType,
       dominant_signal: signal.dominantSignal,
       signal_confidence: signal.confidence,
@@ -808,6 +843,54 @@ async function updateReelOCR(id: string, rawEntries: unknown) {
   return await getReel(id);
 }
 
+async function regenerateAiOverview(reel: Record<string, unknown>) {
+  const reelId = typeof reel.id === "string" ? reel.id : null;
+  if (!reelId) return;
+
+  const [ocrResult, transcriptResult] = await Promise.all([
+    supabase.from("reel_ocr_entries").select("timestamp_seconds, text, confidence").eq("reel_id", reelId).order("timestamp_seconds"),
+    supabase.from("reel_transcript_segments").select("start_seconds, end_seconds, text").eq("reel_id", reelId).order("start_seconds"),
+  ]);
+
+  const ocrEntries: OCREntry[] = (ocrResult.data ?? []).map((row: Record<string, unknown>) => ({
+    timestamp_seconds: clampInt(row.timestamp_seconds, 0),
+    text: textOrFallback(row.text, ""),
+    confidence: numberValue(row.confidence),
+  }));
+
+  const transcript = (transcriptResult.data ?? []).map((row: Record<string, unknown>) => ({
+    start: numberValue(row.start_seconds) ?? 0,
+    end: numberValue(row.end_seconds) ?? 0,
+    text: textOrFallback(row.text, ""),
+  }));
+
+  const input: NormalizedReel = {
+    source: typeof reel.source === "string" ? reel.source : "instagram",
+    source_url: typeof reel.source_url === "string" ? reel.source_url : "",
+    caption: typeof reel.caption === "string" ? reel.caption : null,
+    duration_seconds: typeof reel.duration_seconds === "number" ? reel.duration_seconds : null,
+    video_url: typeof reel.video_url === "string" ? reel.video_url : null,
+    ocr_entries: ocrEntries.length > 0 ? ocrEntries : undefined,
+    transcript: transcript.length > 0 ? transcript : null,
+  };
+
+  const signal = classifySignals(input);
+  const summary = await summarizeReel(input, signal).catch((err) => {
+    console.warn("regenerateAiOverview: summarizeReel failed:", errorMessage(err));
+    return null;
+  });
+
+  if (!summary?.ai_overview) return;
+
+  await supabase
+    .from("reels")
+    .update({
+      category: summary.category,
+      ai_overview: summary.ai_overview,
+    })
+    .eq("id", reelId);
+}
+
 async function importReel(sourceUrl: string, profileId: string) {
   await ensureSocialProfile(profileId);
 
@@ -818,8 +901,13 @@ async function importReel(sourceUrl: string, profileId: string) {
     .maybeSingle();
 
   if (existing?.status === "ready") {
+    const overview = existing.ai_overview as Record<string, unknown> | null;
+    const needsRegen = !overview || !Array.isArray(overview.tabs) || overview.tabs.length === 0;
+    if (needsRegen) {
+      await regenerateAiOverview(existing);
+    }
     await addReelToProfileLibrary(profileId, existing.id);
-    return { reel: existing };
+    return await getReel(existing.id);
   }
 
   const { data: created, error: createError } = await supabase
@@ -856,6 +944,7 @@ async function importReel(sourceUrl: string, profileId: string) {
         title: summary.title,
         category: summary.category,
         summary: summary.summary,
+        ai_overview: summary.ai_overview ?? null,
         raw_payload: apifyItem,
         reel_type: signal.reelType,
         dominant_signal: signal.dominantSignal,
@@ -1172,29 +1261,214 @@ function signalRoutingInstruction(signal: SignalAnalysis | undefined): string {
   }
 }
 
+const INTENT_TYPES = [
+  "recipe",
+  "workout",
+  "travel",
+  "food_guide",
+  "tutorial",
+  "ai_tool",
+  "study",
+  "beauty",
+  "fashion",
+  "tech",
+  "diy",
+  "finance",
+  "business",
+  "product_review",
+  "language",
+  "motivation",
+  "news",
+  "general",
+] as const;
+
+const INTENT_TYPE_GUIDE = `
+Choose the single best category from this list:
+- recipe: cooking, baking, food preparation with ingredients and steps
+- workout: fitness, exercise routines, gym movements, sport drills
+- travel: destinations, itineraries, places to visit, trip vlogs
+- food_guide: restaurant reviews, food spots, where to eat, best dishes
+- tutorial: how-to, step-by-step skills, creative techniques, video editing, photography
+- ai_tool: AI tools, voice cloning, image generators, chatbots, automation tools, AI workflows
+- study: study tips, productivity systems, note-taking, Pomodoro, academic advice
+- beauty: skincare routines, makeup tutorials, haircare, product application order
+- fashion: outfit ideas, style guides, lookbooks, clothing hauls
+- tech: coding tutorials, software setup, developer tools, programming (non-AI)
+- diy: home improvement, crafts, repairs, building projects
+- finance: money tips, budgeting, investing, tax advice, side hustles
+- business: marketing tactics, creator strategies, entrepreneur advice, growth tips
+- product_review: gadget/product reviews, comparisons, pros and cons, verdicts
+- language: language learning, phrases, vocabulary, pronunciation guides
+- motivation: self-improvement, mindset, life advice, inspirational quotes
+- news: news explainers, current events, analysis, briefings
+- general: does not fit any specific category above (memes, entertainment, lifestyle, etc.)`.trim();
+
+// Section schema per category. Each section must have: id, tab_id, type, title, items.
+// Step items use: { title, body, timestamp? }
+// Key-value items use: { label, value?, note? }
+const AI_OVERVIEW_SECTION_SCHEMAS: Record<string, string> = {
+  recipe: `tabs: [{"id":"guide","label":"Recipe"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Dish", value:"name"},{label:"Prep time", value:"X min"},{label:"Cook time", value:"X min"},{label:"Difficulty", value:"Easy|Medium|Hard"}]}
+- {id:"ingredients", tab_id:"guide", type:"ingredients", title:"Ingredients", items:[{label:"ingredient", value:"quantity", note?:"prep note"}]}
+- {id:"steps", tab_id:"guide", type:"steps", title:"Steps", items:[{title:"step name", body:"instruction", timestamp?:"0:00"}]}
+- {id:"substitutions", tab_id:"guide", type:"key_points", title:"Substitutions", items:[{label:"original", value:"substitute"}]}`,
+
+  workout: `tabs: [{"id":"guide","label":"Workout"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Workout type", value:"..."},{label:"Target muscles", value:"..."},{label:"Duration", value:"X min"},{label:"Equipment", value:"..."}]}
+- {id:"exercises", tab_id:"guide", type:"exercises", title:"Exercises", items:[{label:"exercise name", value:"sets x reps", note?:"muscle group"}]}
+- {id:"form_cues", tab_id:"guide", type:"key_points", title:"Form Cues", items:[{label:"exercise", value:"cue"}]}
+- {id:"mistakes", tab_id:"guide", type:"key_points", title:"Mistakes to Avoid", items:[{label:"mistake", value:"correction"}]}`,
+
+  travel: `tabs: [{"id":"places","label":"Places"},{"id":"itinerary","label":"Itinerary"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"places", type:"quick_answer", title:"Quick Answer", items:[{label:"Destination", value:"..."},{label:"Vibe", value:"romantic|budget|luxury|hidden gem|family"},{label:"Best for", value:"..."}]}
+- {id:"places", tab_id:"places", type:"places", title:"Places", items:[{label:"place name", value:"type (cafe/attraction/area)", note?:"tip or why visit"}]}
+- {id:"itinerary", tab_id:"itinerary", type:"steps", title:"Itinerary", items:[{title:"Day 1 / Morning / etc.", body:"plan summary"}]}
+- {id:"tips", tab_id:"places", type:"key_points", title:"Tips", items:[{label:"tip", value:"advice"}]}`,
+
+  food_guide: `tabs: [{"id":"guide","label":"Guide"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"spots", tab_id:"guide", type:"places", title:"Food Spots", items:[{label:"place name", value:"location or cuisine", note?:"must-order dish"}]}
+- {id:"dishes", tab_id:"guide", type:"ingredients", title:"Dishes to Try", items:[{label:"dish name", value:"price range", note?:"description"}]}
+- {id:"tips", tab_id:"guide", type:"key_points", title:"Tips", items:[{label:"tip", value:"advice"}]}`,
+
+  tutorial: `tabs: [{"id":"guide","label":"Guide"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Goal", value:"what you will achieve"},{label:"Best for", value:"who this suits"},{label:"Skill level", value:"beginner|intermediate|advanced"}]}
+- {id:"steps", tab_id:"guide", type:"steps", title:"Steps", items:[{title:"step name", body:"action", timestamp?:"0:00"}]}
+- {id:"tools", tab_id:"guide", type:"key_points", title:"Tools & Materials", items:[{label:"tool", value?:"purpose or spec"}]}
+- {id:"warnings", tab_id:"guide", type:"key_points", title:"Warnings", items:[{label:"warning", value:"what to avoid"}]}`,
+
+  ai_tool: `tabs: [{"id":"guide","label":"Guide"},{"id":"tools","label":"Tools"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Goal", value:"what this tool/workflow achieves"},{label:"Tool mentioned", value:"specific tool name"},{label:"Best for", value:"who benefits from this"}]}
+- {id:"steps", tab_id:"guide", type:"steps", title:"Steps", items:[{title:"step name", body:"concrete action — be specific, not generic", timestamp?:"0:00"}]}
+- {id:"tools", tab_id:"tools", type:"key_points", title:"Tools", items:[{label:"tool name", value:"what it does", note?:"free/paid or link if mentioned"}]}
+- {id:"tips", tab_id:"tools", type:"key_points", title:"Tips", items:[{label:"tip", value:"advice"}]}`,
+
+  study: `tabs: [{"id":"guide","label":"Study Notes"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Main advice", value:"..."},{label:"Best for", value:"..."},{label:"Time needed", value?:"..."}]}
+- {id:"advice", tab_id:"guide", type:"steps", title:"Key Advice", items:[{title:"tip name", body:"explanation"}]}
+- {id:"tools", tab_id:"guide", type:"key_points", title:"Tools Mentioned", items:[{label:"tool", value?:"how to use"}]}
+- {id:"routine", tab_id:"guide", type:"key_points", title:"Routine", items:[{label:"time slot or phase", value:"activity"}]}`,
+
+  beauty: `tabs: [{"id":"routine","label":"Routine"},{"id":"products","label":"Products"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"routine", type:"quick_answer", title:"Quick Answer", items:[{label:"Skin type", value:"..."},{label:"Routine", value:"morning|night|both"},{label:"Duration", value:"X min"}]}
+- {id:"steps", tab_id:"routine", type:"steps", title:"Steps", items:[{title:"step name", body:"action", timestamp?:"0:00"}]}
+- {id:"products", tab_id:"products", type:"ingredients", title:"Products", items:[{label:"product name", value?:"brand", note?:"skin type suitability"}]}
+- {id:"tips", tab_id:"routine", type:"key_points", title:"Tips", items:[{label:"tip", value:"advice"}]}`,
+
+  fashion: `tabs: [{"id":"guide","label":"Outfit"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Style", value:"..."},{label:"Occasion", value:"..."},{label:"Color palette", value:"..."}]}
+- {id:"items", tab_id:"guide", type:"ingredients", title:"Outfit Items", items:[{label:"clothing item", value?:"brand or style", note?:"color or fit"}]}
+- {id:"styling", tab_id:"guide", type:"key_points", title:"Styling Tips", items:[{label:"rule or tip", value:"how to apply"}]}`,
+
+  tech: `tabs: [{"id":"guide","label":"Dev Guide"},{"id":"tools","label":"Stack"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Problem solved", value:"..."},{label:"Language/framework", value:"..."},{label:"Skill level", value:"beginner|intermediate|advanced"}]}
+- {id:"steps", tab_id:"guide", type:"steps", title:"Steps", items:[{title:"step name", body:"action", timestamp?:"0:00"}]}
+- {id:"stack", tab_id:"tools", type:"key_points", title:"Tech Stack", items:[{label:"technology", value:"purpose"}]}
+- {id:"gotchas", tab_id:"guide", type:"key_points", title:"Gotchas", items:[{label:"issue", value:"fix or workaround"}]}`,
+
+  diy: `tabs: [{"id":"guide","label":"Project"},{"id":"materials","label":"Materials"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Goal", value:"..."},{label:"Difficulty", value:"Easy|Medium|Hard"},{label:"Est. cost", value?:"..."},{label:"Time", value?:"..."}]}
+- {id:"steps", tab_id:"guide", type:"steps", title:"Steps", items:[{title:"step name", body:"action", timestamp?:"0:00"}]}
+- {id:"materials", tab_id:"materials", type:"ingredients", title:"Materials", items:[{label:"material", value?:"quantity or spec"}]}
+- {id:"tools", tab_id:"materials", type:"key_points", title:"Tools", items:[{label:"tool", value?:"purpose"}]}`,
+
+  finance: `tabs: [{"id":"guide","label":"Key Points"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Main idea", value:"..."},{label:"Who it applies to", value:"..."},{label:"Risk level", value:"Low|Medium|High"}]}
+- {id:"ideas", tab_id:"guide", type:"steps", title:"Key Ideas", items:[{title:"concept name", body:"explanation"}]}
+- {id:"actions", tab_id:"guide", type:"key_points", title:"Action Steps", items:[{label:"action", value:"how to do it"}]}
+- {id:"disclaimers", tab_id:"guide", type:"key_points", title:"Disclaimers", items:[{label:"risk or caveat", value:"note"}]}`,
+
+  business: `tabs: [{"id":"guide","label":"Strategy"},{"id":"tools","label":"Tools"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Main tactic", value:"..."},{label:"Why it works", value:"..."},{label:"Best for", value:"..."}]}
+- {id:"tactics", tab_id:"guide", type:"steps", title:"How to Apply", items:[{title:"step name", body:"action"}]}
+- {id:"tools", tab_id:"tools", type:"key_points", title:"Tools Mentioned", items:[{label:"tool", value?:"use case"}]}
+- {id:"examples", tab_id:"guide", type:"key_points", title:"Examples", items:[{label:"example", value:"detail"}]}`,
+
+  product_review: `tabs: [{"id":"guide","label":"Review"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"quick_answer", tab_id:"guide", type:"quick_answer", title:"Quick Answer", items:[{label:"Product", value:"..."},{label:"Price", value?:"..."},{label:"Who it's for", value:"..."},{label:"Verdict", value:"Recommended|Not recommended|Mixed"}]}
+- {id:"pros", tab_id:"guide", type:"key_points", title:"Pros", items:[{label:"pro", value?:"detail"}]}
+- {id:"cons", tab_id:"guide", type:"key_points", title:"Cons", items:[{label:"con", value?:"detail"}]}
+- {id:"alternatives", tab_id:"guide", type:"key_points", title:"Alternatives", items:[{label:"alternative", value?:"comparison note"}]}`,
+
+  language: `tabs: [{"id":"phrases","label":"Phrases"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"phrases", tab_id:"phrases", type:"ingredients", title:"Phrases", items:[{label:"phrase (target language)", value:"English translation", note?:"pronunciation"}]}
+- {id:"examples", tab_id:"phrases", type:"key_points", title:"Example Sentences", items:[{label:"phrase", value:"example sentence"}]}`,
+
+  motivation: `tabs: [{"id":"guide","label":"Insights"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"message", tab_id:"guide", type:"quick_answer", title:"Core Message", items:[{label:"Main point", value:"..."},{label:"Applies to", value:"..."}]}
+- {id:"quotes", tab_id:"guide", type:"key_points", title:"Key Quotes", items:[{label:"quote", value?:"context"}]}
+- {id:"actions", tab_id:"guide", type:"steps", title:"Takeaways", items:[{title:"action", body:"how to apply"}]}`,
+
+  news: `tabs: [{"id":"guide","label":"Briefing"},{"id":"context","label":"Context"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"summary", tab_id:"guide", type:"quick_answer", title:"What Happened", items:[{label:"Event", value:"..."},{label:"Where", value?:"..."},{label:"When", value?:"..."}]}
+- {id:"timeline", tab_id:"context", type:"steps", title:"Timeline", items:[{title:"date or event", body:"what happened"}]}
+- {id:"people", tab_id:"context", type:"key_points", title:"Key People & Orgs", items:[{label:"name", value:"role"}]}
+- {id:"context", tab_id:"context", type:"key_points", title:"Background", items:[{label:"context point", value:"explanation"}]}`,
+
+  general: `tabs: [{"id":"guide","label":"Summary"},{"id":"transcript","label":"Voice"},{"id":"screen_text","label":"Screen"}]
+sections:
+- {id:"key_points", tab_id:"guide", type:"steps", title:"Key Points", items:[{title:"point", body:"explanation"}]}`,
+};
+
 async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnalysis): Promise<ReelSummary> {
   const detectedLanguage = typeof input.detected_language === "string" ? input.detected_language : null;
   const languageLine = detectedLanguage && detectedLanguage !== "en"
     ? `The audio language was detected as "${detectedLanguage}". Transcript text may be in this language. Use the original language for raw_text; translate titles and descriptions to English.`
     : "If transcript or caption is non-English, use the original language for raw_text and translate to English for title and description.";
 
-  const prompt = {
-    role: "user",
-    content: [
-      "Convert this short-form video into useful timestamped note segments.",
-      "Return strict JSON with title, category, summary, and segments.",
-      "Each segment must have start_seconds, end_seconds, title, description, raw_text, and tags.",
-      "Use snake_case keys exactly. Segments must use integer seconds and should cover the reel in order.",
-      "IMPORTANT: Base every segment title and description strictly on evidence present in the transcript, ocr_entries, caption, or media_items. Do NOT invent, guess, or hallucinate segment names (e.g. do not generate generic workout steps like 'Warm Up', 'Push Ups', 'Cool Down' unless those exact words appear in the provided data).",
-      languageLine,
-      "If transcript and ocr_entries are both absent or empty, generate the minimum number of segments supportable by the caption or title alone. Do not fabricate content.",
-      signalRoutingInstruction(signal),
-      "When media_items are provided without video_url, treat the content as an image slideshow.",
-      "For image slideshows, use the synthetic timestamps and any per-slide visual text to create replayable slide segments.",
-      "Return one segment per distinct visual state for list/place/item content (up to 20). For narrative or instructional content, return 4 to 8 high-signal segments. Do not return null values.",
-      JSON.stringify(input),
-    ].join("\n\n"),
-  };
+  const allSchemasText = Object.entries(AI_OVERVIEW_SECTION_SCHEMAS)
+    .map(([type, schema]) => `If category="${type}":\n${schema}`)
+    .join("\n\n");
+
+  const promptContent = [
+    "Convert this short-form video into a structured note. Return strict JSON with these top-level keys: title, category, summary, segments, ai_overview.",
+    "",
+    "=== SEGMENTS ===",
+    "Each segment: start_seconds (int), end_seconds (int), title, description, raw_text, tags. Cover reel in order. No null values.",
+    "Base every segment strictly on evidence in transcript/ocr_entries/caption/media_items. Do NOT invent step names.",
+    signalRoutingInstruction(signal),
+    "For image slideshows (media_items present, no video_url): use synthetic timestamps and per-slide visual text for segments.",
+    languageLine,
+    "Return one segment per distinct visual state for list/place content (up to 20). For narrative content, 4–8 high-signal segments.",
+    "",
+    "=== CATEGORY ===",
+    `The category field must be exactly one of: ${INTENT_TYPES.join(", ")}.`,
+    INTENT_TYPE_GUIDE,
+    "",
+    "=== AI OVERVIEW ===",
+    "The ai_overview field is a structured note tailored to the category.",
+    "CRITICAL RULES:",
+    "1. Every item must contain ONLY content that appears in the actual input data (transcript, OCR, caption). Never invent, infer, or pad.",
+    "2. Steps items use {title, body, timestamp?} — title is the step name, body is the specific concrete action extracted from the content, timestamp is 'M:SS' format if the moment appears in the transcript or OCR.",
+    "3. Key-value items use {label, value?, note?} — label is the field name, value is the extracted content.",
+    "4. If a section has no evidenced items, omit it entirely. Do not write placeholder text.",
+    "5. Steps body must describe a SPECIFIC ACTION, not a summary. Bad: 'Voice cloning technology allows...' Good: 'Upload 3+ minutes of clear audio samples to the tool'.",
+    "6. ai_overview.summary must be 2-3 sentences answering: what is this reel about, what can the viewer do with it.",
+    "ai_overview schema: { type, title, summary, confidence:'high'|'medium'|'low', tabs:[{id,label}], sections:[{id, tab_id, type, title, items:[...]}] }",
+    "confidence: 'high' if OCR or transcript strongly support the output, 'medium' if mainly caption-based, 'low' if thin signal.",
+    "",
+    "Section schema for the detected category (use ONLY sections/items evidenced in the input):",
+    allSchemasText,
+    "",
+    "=== INPUT DATA ===",
+    JSON.stringify(input),
+  ].join("\n");
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -1207,12 +1481,12 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
       messages: [
         {
           role: "system",
-          content: "You create concise timestamped learning notes from reels. Respond only with valid JSON.",
+          content: "You are a structured content extractor for a reel-saving app. Extract only what is explicitly present in the input data. Respond with valid JSON only. Never invent content or write generic summaries — every item must trace back to a specific moment in the transcript, OCR, or caption.",
         },
-        prompt,
+        { role: "user", content: promptContent },
       ],
       response_format: { type: "json_object" },
-      temperature: 0.2,
+      temperature: 0.1,
     }),
   });
 
@@ -1222,13 +1496,85 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content;
-  const parsed = JSON.parse(content) as ReelSummary;
+  const parsed = JSON.parse(content) as ReelSummary & { ai_overview?: AiOverview };
+
+  const rawCategory = typeof parsed.category === "string" ? parsed.category.toLowerCase().trim().replace(/[^a-z_]/g, "").replace(/\s+/g, "_") : "";
+  const category = (INTENT_TYPES as readonly string[]).includes(rawCategory) ? rawCategory : "general";
+
+  const ai_overview = normalizeAiOverview(parsed.ai_overview, category);
 
   return {
     title: parsed.title || "Saved reel",
-    category: parsed.category || "general",
+    category,
     summary: parsed.summary || "",
     segments: Array.isArray(parsed.segments) ? parsed.segments : [],
+    ai_overview,
+  };
+}
+
+function normalizeAiOverview(raw: unknown, category: string): AiOverview | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const obj = raw as Record<string, unknown>;
+
+  const sections: AiOverviewSection[] = [];
+  if (Array.isArray(obj.sections)) {
+    for (const rawSection of obj.sections) {
+      const s = rawSection as Record<string, unknown>;
+      const sectionType = typeof s.type === "string" ? s.type.trim() : "key_points";
+      const tabId = typeof s.tab_id === "string" ? s.tab_id.trim() : "guide";
+      const items: AiOverviewItem[] = [];
+      if (Array.isArray(s.items)) {
+        for (const rawItem of s.items) {
+          const it = rawItem as Record<string, unknown>;
+          const item: AiOverviewItem = {};
+          // step format
+          if (typeof it.title === "string" && it.title.trim()) item.title = it.title.trim();
+          if (typeof it.body === "string" && it.body.trim()) item.body = it.body.trim();
+          if (typeof it.timestamp === "string" && it.timestamp.trim()) item.timestamp = it.timestamp.trim();
+          // key-value format
+          if (typeof it.label === "string" && it.label.trim()) item.label = it.label.trim();
+          if (typeof it.value === "string" && it.value.trim()) item.value = it.value.trim();
+          if (typeof it.note === "string" && it.note.trim()) item.note = it.note.trim();
+          // must have at least one meaningful field
+          if (!item.title && !item.label) continue;
+          items.push(item);
+        }
+      }
+      if (items.length === 0) continue;
+      sections.push({
+        id: typeof s.id === "string" ? s.id : "section",
+        tab_id: tabId,
+        type: sectionType,
+        title: typeof s.title === "string" ? s.title : "Section",
+        items,
+      });
+    }
+  }
+
+  if (sections.length === 0) return undefined;
+
+  const tabs: AiTab[] = [];
+  if (Array.isArray(obj.tabs)) {
+    for (const rawTab of obj.tabs) {
+      const t = rawTab as Record<string, unknown>;
+      if (typeof t.id === "string" && typeof t.label === "string") {
+        tabs.push({ id: t.id.trim(), label: t.label.trim() });
+      }
+    }
+  }
+  // fallback tabs if LLM omitted them
+  if (tabs.length === 0) {
+    const aiTabId = "guide";
+    tabs.push({ id: aiTabId, label: "Guide" }, { id: "transcript", label: "Voice" }, { id: "screen_text", label: "Screen" });
+  }
+
+  return {
+    type: category,
+    title: typeof obj.title === "string" ? obj.title.trim() : "",
+    summary: typeof obj.summary === "string" ? obj.summary.trim() : "",
+    confidence: ["high", "medium", "low"].includes(obj.confidence as string) ? (obj.confidence as string) : "medium",
+    tabs,
+    sections,
   };
 }
 

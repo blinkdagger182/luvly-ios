@@ -1,5 +1,133 @@
 import Foundation
 
+enum ReelIntentType: String, CaseIterable {
+    case recipe
+    case workout
+    case travel
+    case foodGuide = "food_guide"
+    case tutorial
+    case aiTool = "ai_tool"
+    case study
+    case beauty
+    case fashion
+    case tech
+    case diy
+    case finance
+    case business
+    case productReview = "product_review"
+    case language
+    case motivation
+    case news
+    case general
+
+    var displayName: String {
+        switch self {
+        case .recipe: return "Recipe"
+        case .workout: return "Workout"
+        case .travel: return "Travel"
+        case .foodGuide: return "Food Guide"
+        case .tutorial: return "Tutorial"
+        case .aiTool: return "AI Tool"
+        case .study: return "Study"
+        case .beauty: return "Beauty"
+        case .fashion: return "Fashion"
+        case .tech: return "Dev"
+        case .diy: return "DIY"
+        case .finance: return "Finance"
+        case .business: return "Business"
+        case .productReview: return "Review"
+        case .language: return "Language"
+        case .motivation: return "Mindset"
+        case .news: return "News"
+        case .general: return "General"
+        }
+    }
+
+    var primaryTabName: String {
+        switch self {
+        case .recipe: return "Recipe"
+        case .workout: return "Workout"
+        case .travel: return "Places"
+        case .foodGuide: return "Guide"
+        case .tutorial: return "Guide"
+        case .aiTool: return "Guide"
+        case .study: return "Notes"
+        case .beauty: return "Routine"
+        case .fashion: return "Outfit"
+        case .tech: return "Dev Steps"
+        case .diy: return "Project"
+        case .finance: return "Key Points"
+        case .business: return "Strategy"
+        case .productReview: return "Review"
+        case .language: return "Phrases"
+        case .motivation: return "Insights"
+        case .news: return "Briefing"
+        case .general: return "Steps"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .recipe: return "fork.knife"
+        case .workout: return "figure.run"
+        case .travel: return "airplane"
+        case .foodGuide: return "mappin.and.ellipse"
+        case .tutorial: return "list.number"
+        case .aiTool: return "wand.and.sparkles"
+        case .study: return "books.vertical"
+        case .beauty: return "sparkles"
+        case .fashion: return "bag"
+        case .tech: return "chevron.left.forwardslash.chevron.right"
+        case .diy: return "hammer"
+        case .finance: return "dollarsign.circle"
+        case .business: return "chart.line.uptrend.xyaxis"
+        case .productReview: return "star.leadinghalf.filled"
+        case .language: return "bubble.left.and.bubble.right"
+        case .motivation: return "flame"
+        case .news: return "newspaper"
+        case .general: return "play.rectangle"
+        }
+    }
+}
+
+struct AiTab: Codable, Hashable {
+    let id: String
+    let label: String
+}
+
+struct AiOverviewItem: Codable, Hashable {
+    // key-value items (quick_answer, ingredients, key_points, etc.)
+    let label: String?
+    let value: String?
+    let note: String?
+    // step items
+    let title: String?
+    let body: String?
+    let timestamp: String?
+}
+
+struct AiOverviewSection: Codable, Hashable {
+    let id: String
+    let tabId: String?
+    let type: String?
+    let title: String
+    let items: [AiOverviewItem]
+
+    enum CodingKeys: String, CodingKey {
+        case id, type, title, items
+        case tabId = "tab_id"
+    }
+}
+
+struct AiOverview: Codable, Hashable {
+    let type: String
+    let title: String
+    let summary: String
+    let confidence: String?
+    let tabs: [AiTab]?
+    let sections: [AiOverviewSection]
+}
+
 struct ReelItem: Identifiable, Codable, Hashable {
     let id: UUID
     let source: String
@@ -23,6 +151,7 @@ struct ReelItem: Identifiable, Codable, Hashable {
     let transcriptSegments: [ReelTranscriptSegment]?
     let reelType: String?
     let dominantSignal: String?
+    let aiOverview: AiOverview?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -47,6 +176,12 @@ struct ReelItem: Identifiable, Codable, Hashable {
         case transcriptSegments = "reel_transcript_segments"
         case reelType = "reel_type"
         case dominantSignal = "dominant_signal"
+        case aiOverview = "ai_overview"
+    }
+
+    var intentType: ReelIntentType {
+        guard let category else { return .general }
+        return ReelIntentType(rawValue: category.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) ?? .general
     }
 }
 
