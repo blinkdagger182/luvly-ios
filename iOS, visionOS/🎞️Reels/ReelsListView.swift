@@ -5868,7 +5868,7 @@ private struct ReelSummaryView: View {
             Color.black
                 .ignoresSafeArea(edges: .top)
 
-            // Hero — fixed behind the sheet
+            // Hero — expands toward fullscreen as user drags the sheet down
             VStack(spacing: 0) {
                 ReelSummaryHero(
                     reel: self.reel,
@@ -5876,23 +5876,23 @@ private struct ReelSummaryView: View {
                     currentSeconds: self.playback.currentSeconds,
                     durationSeconds: self.playback.durationSeconds ?? Double(self.reel.durationSeconds ?? 0),
                     isPlaying: self.playback.isPlaying,
-                    expandProgress: 0,
+                    expandProgress: self.sheetDetent == .half ? self.expandDragProgress : 0,
                     activeSegment: self.focusedSegmentID.flatMap { id in self.segments.first { $0.id == id } } ?? self.segments.first,
                     slideIndex: self.$carouselSlideIndex,
                     onSeek: { self.playback.seek(to: $0) },
                     onTogglePlayPause: { self.playback.togglePlayPause() },
                     onOpenFullscreen: { self.openFullscreenVideo() }
                 )
-                .frame(height: self.heroHeight)
+                .frame(height: self.interactiveHeroHeight)
                 .contentShape(Rectangle())
                 Spacer()
             }
             .ignoresSafeArea(edges: .top)
-            .zIndex(1)
+            .zIndex(self.isHeroExpanding ? 4 : 1)
 
             // Sheet — slides over the hero
             VStack(spacing: 0) {
-                Color.clear.frame(height: self.sheetTopY).allowsHitTesting(false)
+                Spacer().frame(height: self.sheetTopY).allowsHitTesting(false)
                 VStack(spacing: 0) {
                     // Drag handle
                     Capsule()
@@ -6278,6 +6278,18 @@ private struct ReelSummaryView: View {
         min(max(self.expandDragTranslation / 260, 0), 1)
     }
 
+    private var interactiveHeroHeight: CGFloat {
+        guard self.sheetDetent == .half, self.expandDragProgress > 0 else {
+            return self.heroHeight
+        }
+        let screenH = UIScreen.main.bounds.height
+        return self.heroHeight + (screenH - self.heroHeight) * self.expandDragProgress
+    }
+
+    private var isHeroExpanding: Bool {
+        self.sheetDetent == .half && self.expandDragProgress > 0
+    }
+
     private var halfDetentY: CGFloat { self.heroHeight }
 
     private var fullDetentY: CGFloat { UIApplication.shared.reelplayTopSafeArea + 10 }
@@ -6288,8 +6300,6 @@ private struct ReelSummaryView: View {
         let screenH = UIScreen.main.bounds.height
         return min(screenH - 80, max(self.fullDetentY, raw))
     }
-
-    private var interactiveHeroHeight: CGFloat { self.heroHeight }
 
     private var attachedContentTopHeight: CGFloat { self.heroHeight }
 
@@ -6352,7 +6362,6 @@ private struct ReelSummaryView: View {
                             self.expandDragTranslation = 0
                         }
                     } else if translation > 60 || predicted > 120 {
-                        self.expandDragTranslation = 0
                         self.completeDragToFullscreen()
                     } else {
                         withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
@@ -6401,7 +6410,6 @@ private struct ReelSummaryView: View {
                         self.expandDragTranslation = 0
                     }
                 } else {
-                    self.expandDragTranslation = 0
                     self.completeDragToFullscreen()
                 }
             }
@@ -6464,9 +6472,16 @@ private struct ReelSummaryView: View {
         let isCarousel = self.reel.videoURL == nil && !(self.reel.mediaItems ?? []).isEmpty
         if isCarousel {
             withAnimation(.interactiveSpring(response: 0.24, dampingFraction: 0.92)) {
-                self.expandDragTranslation = 0
+                self.expandDragTranslation = 260
             }
-            self.isShowingCarouselFullscreen = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                var transaction = Transaction()
+                transaction.animation = nil
+                withTransaction(transaction) {
+                    self.isShowingCarouselFullscreen = true
+                    self.expandDragTranslation = 0
+                }
+            }
             return
         }
 
@@ -7117,48 +7132,51 @@ private struct ReelSummaryHero: View {
 
     var body: some View {
         ZStack {
-            Button(action: self.showControlsTemporarily) {
-                GeometryReader { proxy in
-                    ZStack {
-                        Color.black
+            let isSlideshow = self.reel.videoURL == nil && !self.sortedMediaItems.isEmpty
 
-                        if let player {
-                            FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspect)
-                                .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
-                                .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                        } else if let videoURL = self.slideVideoURL {
-                            SlideVideoPlayer(url: videoURL, thumbnailURL: self.slideImageURL)
-                                .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
-                                .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
-                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                                .id(videoURL.absoluteString)
-                        } else {
-                            let isSlide = self.reel.videoURL == nil
-                            if isSlide {
-                                // Carousel: fill the full hero width so nothing appears cropped.
-                                // The 9/16 frame calculation is designed for video and makes images
-                                // appear in a narrow strip with black on both sides.
-                                let items = self.sortedMediaItems
-                                TabView(selection: self.$slideIndex) {
-                                    ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                                        let imgURL = item.thumbnailURL ?? (item.type == "image" ? item.url : nil)
-                                        ZStack {
-                                            CachedRemoteImage(url: imgURL ?? self.reel.displayThumbnailURL) { Color.black }
-                                                .blur(radius: 20)
-                                                .scaleEffect(1.06)
-                                            CachedRemoteImage(
-                                                url: imgURL ?? self.reel.displayThumbnailURL,
-                                                contentMode: .fit
-                                            ) { Color.clear }
-                                        }
-                                        .frame(width: proxy.size.width, height: proxy.size.height)
-                                        .clipped()
-                                        .tag(idx)
-                                    }
-                                }
-                                .tabViewStyle(.page(indexDisplayMode: .never))
-                                .frame(width: proxy.size.width, height: proxy.size.height)
+            if isSlideshow {
+                // Slideshow: TabView lives directly in the ZStack so its horizontal
+                // paging gesture is never swallowed by a Button tap recognizer.
+                GeometryReader { proxy in
+                    let items = self.sortedMediaItems
+                    TabView(selection: self.$slideIndex) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                            let imgURL = item.thumbnailURL ?? (item.type == "image" ? item.url : nil)
+                            ZStack {
+                                CachedRemoteImage(url: imgURL ?? self.reel.displayThumbnailURL) { Color.black }
+                                    .blur(radius: 20)
+                                    .scaleEffect(1.06)
+                                CachedRemoteImage(
+                                    url: imgURL ?? self.reel.displayThumbnailURL,
+                                    contentMode: .fit
+                                ) { Color.clear }
+                            }
+                            .frame(width: proxy.size.width, height: proxy.size.height)
+                            .clipped()
+                            .tag(idx)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Button(action: self.showControlsTemporarily) {
+                    GeometryReader { proxy in
+                        ZStack {
+                            Color.black
+
+                            if let player {
+                                FullScreenReelVideoPlayer(player: player, videoGravity: .resizeAspect)
+                                    .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
+                                    .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                            } else if let videoURL = self.slideVideoURL {
+                                SlideVideoPlayer(url: videoURL, thumbnailURL: self.slideImageURL)
+                                    .frame(width: self.videoFrameWidth(in: proxy.size), height: self.videoFrameHeight(in: proxy.size))
+                                    .clipShape(RoundedRectangle(cornerRadius: self.videoCornerRadius))
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                                    .id(videoURL.absoluteString)
                             } else {
                                 ZStack {
                                     CachedRemoteImage(url: self.reel.displayThumbnailURL) { Color.black }
@@ -7174,12 +7192,12 @@ private struct ReelSummaryHero: View {
                                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                             }
                         }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
                     }
-                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
+            } // end non-slideshow else
 
             LinearGradient(
                 colors: [.black.opacity(0.12), .clear, .black.opacity(0.55)],
@@ -7187,6 +7205,7 @@ private struct ReelSummaryHero: View {
                 endPoint: .bottom
             )
             .opacity(1 - min(self.expandProgress, 0.9))
+            .allowsHitTesting(false)
 
             VStack {
                 if self.reel.videoURL == nil, self.sortedMediaItems.count > 1 {
@@ -7221,46 +7240,48 @@ private struct ReelSummaryHero: View {
                         .buttonStyle(.plain)
                     }
 
-                    HStack {
-                        if self.areControlsVisible {
-                            Button {
-                                self.showControlsTemporarily()
-                                self.onTogglePlayPause()
-                            } label: {
-                                Image(systemName: self.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 34, height: 34)
-                                    .background(.white.opacity(0.16))
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
+                    if self.reel.videoURL != nil {
+                        HStack {
+                            if self.areControlsVisible {
+                                Button {
+                                    self.showControlsTemporarily()
+                                    self.onTogglePlayPause()
+                                } label: {
+                                    Image(systemName: self.isPlaying ? "pause.fill" : "play.fill")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 34, height: 34)
+                                        .background(.white.opacity(0.16))
+                                        .clipShape(Circle())
+                                }
+                                .buttonStyle(.plain)
 
-                            Text("\(SegmentPageView.format(Int(self.displaySeconds))) / \(SegmentPageView.format(Int(self.safeDuration)))")
-                                .font(.subheadline.monospacedDigit().weight(.bold))
-                                .foregroundStyle(.white)
-                                .transition(.opacity)
+                                Text("\(SegmentPageView.format(Int(self.displaySeconds))) / \(SegmentPageView.format(Int(self.safeDuration)))")
+                                    .font(.subheadline.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(.white)
+                                    .transition(.opacity)
+                            }
+
+                            Spacer()
                         }
 
-                        Spacer()
-                    }
-
-                    if self.areControlsVisible {
-                        ReelVideoScrubber(
-                            value: self.$scrubSeconds,
-                            duration: self.safeDuration,
-                            onEditingChanged: { editing in
-                                self.isScrubbing = editing
-                                if editing {
-                                    self.showControls()
-                                } else {
-                                    self.onSeek(self.scrubSeconds)
-                                    self.scheduleControlsHide()
+                        if self.areControlsVisible {
+                            ReelVideoScrubber(
+                                value: self.$scrubSeconds,
+                                duration: self.safeDuration,
+                                onEditingChanged: { editing in
+                                    self.isScrubbing = editing
+                                    if editing {
+                                        self.showControls()
+                                    } else {
+                                        self.onSeek(self.scrubSeconds)
+                                        self.scheduleControlsHide()
+                                    }
                                 }
-                            }
-                        )
-                        .frame(height: 22)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            )
+                            .frame(height: 22)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -7271,9 +7292,7 @@ private struct ReelSummaryHero: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 0))
         .contentShape(Rectangle())
-        .onTapGesture {
-            self.showControlsTemporarily()
-        }
+        .simultaneousGesture(TapGesture().onEnded { self.showControlsTemporarily() })
         .onAppear {
             self.scrubSeconds = self.currentSeconds
             self.showControlsTemporarily()

@@ -919,7 +919,7 @@ async function importReel(sourceUrl: string, profileId: string) {
     .eq("source_url", sourceUrl)
     .maybeSingle();
 
-  if (existing?.status === "ready") {
+  if (existing?.status === "ready" || existing?.status === "ready_basic") {
     const overview = existing.ai_overview as Record<string, unknown> | null;
     const needsRegen = !overview || !Array.isArray(overview.tabs) || overview.tabs.length === 0;
     if (needsRegen) {
@@ -944,14 +944,50 @@ async function importReel(sourceUrl: string, profileId: string) {
 
   try {
     const source = detectSource(sourceUrl);
-    const apifyItem = await runApify(sourceUrl, source);
+
+    // Checkpoint 1: Apify scrape — reuse raw_payload from prior attempt if present
+    let apifyItem: Record<string, unknown>;
+    if (existing?.raw_payload && typeof existing.raw_payload === "object") {
+      apifyItem = existing.raw_payload as Record<string, unknown>;
+    } else {
+      apifyItem = await runApify(sourceUrl, source);
+      // Persist immediately so the next retry can skip scraping
+      await supabase.from("reels").update({ raw_payload: apifyItem }).eq("id", created.id);
+    }
+
     const rawDuration = numberValue(apifyItem.videoDuration) ?? numberValue((apifyItem.videoMeta as Record<string, unknown>)?.duration);
     if (source === "tiktok" && !apifyItem.isSlideshow && rawDuration !== null && rawDuration > 90) {
       throw new Error("TikTok videos over 90 seconds are not supported.");
     }
     const normalized = await normalizeApifyItem(sourceUrl, apifyItem);
     const signal = classifySignals(normalized);
-    const summary = await summarizeReel(normalized, signal);
+
+    // Checkpoint 2: OpenAI summary — reuse if title + overview + segments already saved
+    const savedTitle = typeof existing?.title === "string" && (existing.title as string).length > 0
+      ? existing.title as string : null;
+    const savedOverview = (existing?.ai_overview ?? null) as Record<string, unknown> | null;
+    const savedSegments = Array.isArray(existing?.reel_segments) && (existing.reel_segments as unknown[]).length > 0
+      ? existing.reel_segments as Record<string, unknown>[] : null;
+
+    let summary: ReelSummary;
+    if (savedTitle && savedOverview && savedSegments) {
+      summary = {
+        title: savedTitle,
+        category: typeof existing?.category === "string" ? existing.category as string : "general",
+        summary: typeof existing?.summary === "string" ? existing.summary as string : "",
+        segments: savedSegments.map((s) => ({
+          start_seconds: clampInt(s.start_seconds, 0),
+          end_seconds: clampInt(s.end_seconds, 1),
+          title: typeof s.title === "string" ? s.title : "",
+          description: typeof s.description === "string" ? s.description : "",
+          raw_text: typeof s.raw_text === "string" ? s.raw_text : undefined,
+          tags: Array.isArray(s.tags) ? s.tags as string[] : [],
+        })),
+        ai_overview: savedOverview as unknown as AiOverview,
+      };
+    } else {
+      summary = await summarizeReel(normalized, signal);
+    }
 
     const needsVisualOCR = hasVideoURL(normalized) || (Array.isArray(normalized.media_items) && normalized.media_items.length > 0);
     const hasServerOCR = hasOCREntries(normalized.ocr_entries);
@@ -1466,7 +1502,15 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
         .filter((u): u is string => !!u)
     : [];
 
-  const inputForPrompt = slideItems.length > 0
+  // Proxy images through the edge function so OpenAI can read them as base64 data URLs.
+  // Direct CDN URLs from Instagram (and sometimes TikTok) are blocked by OpenAI's servers.
+  const slideDataUrls: string[] = slideItems.length > 0
+    ? (await Promise.all(slideItems.map(url => fetchImageAsDataUrl(url)))).filter((u): u is string => u !== null)
+    : [];
+
+  const useVision = slideDataUrls.length > 0;
+
+  const inputForPrompt = useVision
     ? { ...input, ocr_entries: undefined }
     : input;
 
@@ -1504,15 +1548,15 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
     JSON.stringify(inputForPrompt),
   ].join("\n");
 
-  const userMessageContent: unknown = slideItems.length > 0
+  const userMessageContent: unknown = useVision
     ? [
         {
           type: "text",
           text: promptContent + "\n\nIMPORTANT: The slide images below are the PRIMARY source of truth. Read the exact text, place names, labels, and descriptions directly from each slide image. Extract one entry per slide.",
         },
-        ...slideItems.map(url => ({
+        ...slideDataUrls.map(dataUrl => ({
           type: "image_url",
-          image_url: { url, detail: "low" },
+          image_url: { url: dataUrl, detail: "low" },
         })),
       ]
     : promptContent;
@@ -1524,7 +1568,7 @@ async function summarizeReel(input: Record<string, unknown>, signal?: SignalAnal
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: slideItems.length > 0 ? "gpt-4o-mini" : openAIModel,
+      model: useVision ? "gpt-4o-mini" : openAIModel,
       messages: [
         {
           role: "system",
@@ -2479,6 +2523,24 @@ function parseVideoIntelligenceText(annotations: unknown[], durationSeconds: num
 function parseTimeOffset(offset: string): number {
   const n = parseFloat(offset.replace("s", ""));
   return Number.isFinite(n) ? n : 0;
+}
+
+// Instagram (and some other CDNs) block OpenAI's servers from fetching image URLs directly.
+// Proxy through the edge function: download the image here and pass a base64 data URL to OpenAI.
+async function fetchImageAsDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "image/jpeg";
+    const mimeType = contentType.split(";")[0].trim();
+    const base64 = arrayBufferToBase64(await res.arrayBuffer());
+    return `data:${mimeType};base64,${base64}`;
+  } catch {
+    return null;
+  }
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
