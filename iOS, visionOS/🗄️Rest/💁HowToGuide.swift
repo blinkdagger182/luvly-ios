@@ -92,7 +92,7 @@ struct 💁HowToOnBoarding: View {
     }
 }
 
-private enum ReelplayOnboardingTheme {
+enum ReelplayOnboardingTheme {
     static let black = Color(hex: 0x111111)
     static let background = Color(hex: 0xFBF5EF)
     static let card = Color.white.opacity(0.72)
@@ -113,7 +113,7 @@ private extension Color {
     }
 }
 
-private struct ReelplayOnboardingPage: Hashable {
+struct ReelplayOnboardingPage: Hashable {
     let icon: String
     let title: String
     let subtitle: String
@@ -151,35 +151,103 @@ private struct ReelplayOnboardingPage: Hashable {
     ]
 }
 
-private struct ReelplayOnboardingCarousel: View {
+struct ReelplayOnboardingCarousel: View {
     private let reels = OnboardingReelCard.sample
+    @State private var appeared  = false
+    @State private var floatUp   = false
+    @State private var featured  = 0
+
+    private let cycleTimer = Timer.publish(every: 2.6, on: .main, in: .common).autoconnect()
 
     var body: some View {
         GeometryReader { proxy in
-            let centerWidth = min(proxy.size.width * 0.27, 128)
-            let sideWidth = centerWidth * 0.74
-            let spacing = max(6, proxy.size.width * 0.018)
+            let baseW   = min(proxy.size.width * 0.27, 128)
+            let sideW   = baseW * 0.74
+            let gap     = max(6, proxy.size.width * 0.018)
+            let innerX  = baseW / 2 + gap + sideW / 2
+            let outerX  = innerX + sideW + gap
 
-            HStack(alignment: .center, spacing: spacing) {
+            ZStack(alignment: .center) {
                 ForEach(Array(self.reels.enumerated()), id: \.element.id) { index, reel in
-                    OnboardingReelCardView(reel: reel, isFeatured: index == 2)
-                        .frame(width: index == 2 ? centerWidth : sideWidth, height: index == 2 ? centerWidth * 1.5 : centerWidth * 1.28)
-                        .rotationEffect(.degrees(Self.rotation(for: index)))
-                        .offset(y: index == 2 ? -8 : 10)
-                        .zIndex(index == 2 ? 2 : 1)
+                    let rel = self.relPos(index)
+                    let star = rel == 0
+                    let w = star ? baseW : sideW * (abs(rel) == 2 ? 0.88 : 1)
+                    let h = w * (star ? 1.5 : 1.28)
+
+                    OnboardingReelCardView(reel: reel, isFeatured: star)
+                        .frame(width: w, height: h)
+                        .rotationEffect(.degrees(Self.rotation(rel)))
+                        .offset(x: Self.xOff(rel, inner: innerX, outer: outerX),
+                                y: star ? (self.floatUp ? -12 : -4) : 10)
+                        .opacity(self.appeared ? Self.opacity(rel) : 0)
+                        .scaleEffect(self.appeared ? 1 : 0.78)
+                        .zIndex(star ? 10 : Double(4 - abs(rel)))
+                        .animation(
+                            .spring(response: 0.52, dampingFraction: 0.76),
+                            value: self.featured
+                        )
+                        .animation(
+                            .spring(response: 0.58, dampingFraction: 0.72)
+                                .delay(Double(index) * 0.06),
+                            value: self.appeared
+                        )
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, 18)
+            .frame(maxWidth: proxy.size.width, maxHeight: .infinity)
+            .clipped()
+        }
+        .onAppear {
+            self.appeared = true
+            withAnimation(.easeInOut(duration: 1.9).repeatForever(autoreverses: true).delay(0.5)) {
+                self.floatUp = true
+            }
+        }
+        .onReceive(self.cycleTimer) { _ in
+            self.featured = (self.featured + 1) % self.reels.count
         }
     }
 
-    private static func rotation(for index: Int) -> Double {
-        [-8, -3, 0, 4, 7][index]
+    private func relPos(_ index: Int) -> Int {
+        var r = index - self.featured
+        let n = self.reels.count
+        if r >  n / 2 { r -= n }
+        if r < -(n / 2) { r += n }
+        return r
+    }
+
+    private static func opacity(_ rel: Int) -> Double {
+        switch abs(rel) {
+        case 0: return 1.0
+        case 1: return 0.88
+        case 2: return 0.46
+        default: return 0
+        }
+    }
+
+    private static func rotation(_ rel: Int) -> Double {
+        switch rel {
+        case -2: return -8
+        case -1: return -3
+        case  0: return  0
+        case  1: return  4
+        case  2: return  7
+        default: return  0
+        }
+    }
+
+    private static func xOff(_ rel: Int, inner: CGFloat, outer: CGFloat) -> CGFloat {
+        switch rel {
+        case -2: return -outer
+        case -1: return -inner
+        case  0: return  0
+        case  1: return  inner
+        case  2: return  outer
+        default: return  0
+        }
     }
 }
 
-private struct OnboardingReelCard: Identifiable, Hashable {
+struct OnboardingReelCard: Identifiable, Hashable {
     let id = UUID()
     let title: String
     let subtitle: String
@@ -198,7 +266,7 @@ private struct OnboardingReelCard: Identifiable, Hashable {
     }()
 }
 
-private struct OnboardingReelCardView: View {
+struct OnboardingReelCardView: View {
     let reel: OnboardingReelCard
     let isFeatured: Bool
 
@@ -254,7 +322,7 @@ private struct OnboardingReelCardView: View {
     }
 }
 
-private struct ReelplayOnboardingPageView: View {
+struct ReelplayOnboardingPageView: View {
     let page: ReelplayOnboardingPage
 
     var body: some View {
@@ -532,32 +600,26 @@ private struct OnboardingStepList: View {
     }
 }
 
-private struct ReelplayOnboardingDots: View {
+struct ReelplayOnboardingDots: View {
     let count: Int
     let selectedPage: Int
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 7) {
             ForEach(0..<self.count, id: \.self) { index in
-                Circle()
-                    .fill(index == self.selectedPage ? ReelplayOnboardingTheme.black : Color.black.opacity(0.2))
-                    .frame(width: 9, height: 9)
+                let isActive = index == self.selectedPage
+                Capsule()
+                    .fill(isActive ? ReelplayOnboardingTheme.black : Color.black.opacity(0.18))
+                    .frame(width: isActive ? 24 : 8, height: 8)
+                    .animation(.spring(response: 0.34, dampingFraction: 0.78), value: selectedPage)
             }
         }
     }
 }
 
 struct 💁OnBoardingHandle: ViewModifier {
-    @EnvironmentObject var app: 📱AppModel
     func body(content: Content) -> some View {
-        content
-#if !os(visionOS)
-            .task {
-                if NSUbiquitousKeyValueStore.default.dictionaryRepresentation.isEmpty {
-                    self.app.sheet = .onboarding
-                }
-            }
-#endif
+        content  // onboarding now lives in ReelAuthLandingView (auth flow)
     }
 }
 

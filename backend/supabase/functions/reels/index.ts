@@ -101,6 +101,11 @@ const apifyTikTokActorId = Deno.env.get("APIFY_TIKTOK_ACTOR_ID") ?? "clockworks/
 const apifyInstagramPostActorId = Deno.env.get("APIFY_INSTAGRAM_POST_ACTOR_ID") ?? "apify/instagram-scraper";
 const openAIModel = Deno.env.get("OPENAI_MODEL") ?? "gpt-4o-mini";
 const googleVideoIntelligenceApiKey = Deno.env.get("GOOGLE_VIDEO_INTELLIGENCE_API_KEY") ?? "";
+const instagramCookiesRaw = Deno.env.get("INSTAGRAM_COOKIES") ?? "";
+const apnsPrivateKey = Deno.env.get("APNS_PRIVATE_KEY") ?? "";
+const apnsKeyId = Deno.env.get("APNS_KEY_ID") ?? "";
+const apnsTeamId = Deno.env.get("APNS_TEAM_ID") ?? "";
+const apnsBundleId = Deno.env.get("APNS_BUNDLE_ID") ?? "";
 
 const supabase = createClient(supabaseUrl, serviceRoleKey);
 
@@ -272,6 +277,9 @@ async function handleSocial(request: Request, url: URL, action?: string) {
   if (action === "friend-shares") return await shareWithFriend(body);
   if (action === "friends") return await requestFriend(body);
   if (action === "friend-response") return await respondToFriendRequest(body);
+  if (action === "push-token") return await registerPushToken(body);
+  if (action === "collections-delete") return await deleteSocialCollection(body);
+  if (action === "collections-rename") return await renameSocialCollection(body);
 
   throw new Error("Unknown social action");
 }
@@ -695,6 +703,36 @@ async function shareWithFriend(body: Record<string, unknown>) {
 
   if (reelId) {
     await incrementPublicShareCount(reelId);
+  }
+
+  // Fire push notification to receiver (non-blocking)
+  const senderProfile = await getSocialProfileRow(profileId).catch(() => null);
+  const senderName = senderProfile?.display_name ?? senderProfile?.handle ?? "Someone";
+
+  if (collectionId) {
+    const { data: collection } = await supabase
+      .from("reel_social_collections")
+      .select("name")
+      .eq("id", collectionId)
+      .maybeSingle();
+    const collectionName = collection?.name ?? "a collection";
+    sendPushToProfile(receiverProfileId, receiverHandle,
+      `${senderName} shared a collection`,
+      `"${collectionName}" — tap to view`,
+      { type: "collection_share", collection_id: collectionId, sender_profile_id: profileId },
+    ).catch(() => {/* ignore push failures */});
+  } else if (reelId) {
+    const { data: reel } = await supabase
+      .from("reels")
+      .select("title")
+      .eq("id", reelId)
+      .maybeSingle();
+    const reelTitle = reel?.title ?? "a reel";
+    sendPushToProfile(receiverProfileId, receiverHandle,
+      `${senderName} shared a reel`,
+      `"${reelTitle}" — tap to view`,
+      { type: "reel_share", reel_id: reelId, sender_profile_id: profileId },
+    ).catch(() => {/* ignore push failures */});
   }
 
   return await socialSummary(profileId);
@@ -1146,7 +1184,17 @@ async function runApify(sourceUrl: string, source = detectSource(sourceUrl)) {
     throw new Error("Apify returned no reel items");
   }
 
-  return items[0];
+  const item = items[0] as Record<string, unknown>;
+  if (typeof item.error === "string") {
+    const restrictedAge = typeof item.restricted_age === "number" ? item.restricted_age : null;
+    if (restrictedAge) {
+      throw new Error(`This reel is age-restricted (${restrictedAge}+) and cannot be imported.`);
+    }
+    const desc = typeof item.errorDescription === "string" ? item.errorDescription : item.error;
+    throw new Error(`Instagram could not load this reel: ${desc}`);
+  }
+
+  return item;
 }
 
 function actorForSource(sourceUrl: string, source: string) {
@@ -1169,6 +1217,10 @@ function apifyInputForSource(sourceUrl: string, source: string) {
     };
   }
 
+  const loginCookies = instagramCookiesRaw ? (() => {
+    try { return JSON.parse(instagramCookiesRaw); } catch { return undefined; }
+  })() : undefined;
+
   return {
     username: [sourceUrl],
     directUrls: [sourceUrl],
@@ -1179,6 +1231,7 @@ function apifyInputForSource(sourceUrl: string, source: string) {
     includeSharesCount: false,
     includeTranscript: false,
     includeDownloadedVideo: false,
+    ...(loginCookies ? { loginCookies } : {}),
   };
 }
 
@@ -2551,6 +2604,168 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+// ─── Push token registration ────────────────────────────────────────────────
+
+async function registerPushToken(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const token = textOrFallback(body.token, "");
+  if (!token) throw new Error("Missing token");
+  const platform = textOrFallback(body.platform, "ios");
+
+  const { error } = await supabase
+    .from("device_push_tokens")
+    .upsert({ profile_id: profileId, token, platform, updated_at: new Date().toISOString() }, {
+      onConflict: "profile_id,token",
+    });
+  if (error) throw error;
+
+  return { ok: true };
+}
+
+// ─── Collection delete / rename (missing from original handleSocial) ─────────
+
+async function deleteSocialCollection(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const collectionId = uuidText(body.collection_id, "Missing collection_id");
+
+  const { error } = await supabase
+    .from("reel_social_collections")
+    .delete()
+    .eq("id", collectionId)
+    .eq("profile_id", profileId);
+  if (error) throw error;
+
+  return await socialSummary(profileId);
+}
+
+async function renameSocialCollection(body: Record<string, unknown>) {
+  const profileId = profileIdFromBody(body);
+  const collectionId = uuidText(body.collection_id, "Missing collection_id");
+  const name = textOrFallback(body.name, "Collection");
+
+  const { error } = await supabase
+    .from("reel_social_collections")
+    .update({ name, updated_at: new Date().toISOString() })
+    .eq("id", collectionId)
+    .eq("profile_id", profileId);
+  if (error) throw error;
+
+  return await socialSummary(profileId);
+}
+
+// ─── APNs push notifications ─────────────────────────────────────────────────
+
+function base64url(data: Uint8Array | string): string {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+let cachedApnsJwt: { token: string; issuedAt: number } | null = null;
+
+async function getApnsJwt(): Promise<string | null> {
+  if (!apnsPrivateKey || !apnsKeyId || !apnsTeamId) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  // Reuse JWT if issued less than 55 minutes ago (APNs tokens are valid 1 hour)
+  if (cachedApnsJwt && now - cachedApnsJwt.issuedAt < 3300) return cachedApnsJwt.token;
+
+  try {
+    const rawKey = apnsPrivateKey
+      .replace(/-----BEGIN PRIVATE KEY-----/g, "")
+      .replace(/-----END PRIVATE KEY-----/g, "")
+      .replace(/\s+/g, "");
+
+    const keyBytes = Uint8Array.from(atob(rawKey), (c) => c.charCodeAt(0));
+    const privateKey = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBytes,
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["sign"],
+    );
+
+    const header = base64url(JSON.stringify({ alg: "ES256", kid: apnsKeyId }));
+    const payload = base64url(JSON.stringify({ iss: apnsTeamId, iat: now }));
+    const signingInput = `${header}.${payload}`;
+
+    const signature = await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" },
+      privateKey,
+      new TextEncoder().encode(signingInput),
+    );
+
+    const token = `${signingInput}.${base64url(new Uint8Array(signature))}`;
+    cachedApnsJwt = { token, issuedAt: now };
+    return token;
+  } catch (err) {
+    console.warn("APNs JWT creation failed:", errorMessage(err));
+    return null;
+  }
+}
+
+async function sendApnsPush(deviceToken: string, title: string, body: string, data: Record<string, unknown>) {
+  const jwt = await getApnsJwt();
+  if (!jwt || !apnsBundleId) return;
+
+  const url = `https://api.push.apple.com/3/device/${deviceToken}`;
+  const payload = JSON.stringify({
+    aps: { alert: { title, body }, sound: "default", badge: 1 },
+    ...data,
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "authorization": `bearer ${jwt}`,
+        "apns-topic": apnsBundleId,
+        "apns-push-type": "alert",
+        "content-type": "application/json",
+      },
+      body: payload,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn(`APNs rejected token ${deviceToken.slice(0, 8)}…: ${res.status} ${text}`);
+    }
+  } catch (err) {
+    console.warn("APNs send failed:", errorMessage(err));
+  }
+}
+
+async function sendPushToProfile(receiverProfileId: string | null, receiverHandle: string | null, title: string, body: string, data: Record<string, unknown>) {
+  if (!apnsPrivateKey || !apnsBundleId) return;
+
+  let profileId = receiverProfileId;
+
+  // Resolve handle → profile_id if we only have a handle
+  if (!profileId && receiverHandle) {
+    const { data: row } = await supabase
+      .from("reel_social_profiles")
+      .select("id")
+      .eq("handle", receiverHandle)
+      .maybeSingle();
+    if (row?.id) profileId = row.id;
+  }
+
+  if (!profileId) return;
+
+  const { data: tokens } = await supabase
+    .from("device_push_tokens")
+    .select("token")
+    .eq("profile_id", profileId)
+    .eq("platform", "ios");
+
+  await Promise.allSettled(
+    (tokens ?? []).map((row: Record<string, unknown>) =>
+      sendApnsPush(String(row.token), title, body, data)
+    ),
+  );
 }
 
 function json(value: unknown, status = 200) {

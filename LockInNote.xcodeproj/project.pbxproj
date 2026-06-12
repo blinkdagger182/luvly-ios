@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		1180C3B113BDDF0BA39C7104 /* ReelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09E5D56FD058A6900C5BFB15 /* ReelService.swift */; };
+		18A7F4102FAAA00100A7F410 /* ReelAuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A7F40E2FAAA00100A7F410 /* ReelAuthService.swift */; };
+		18A7F4112FAAA00100A7F410 /* ReelAuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18A7F40F2FAAA00100A7F410 /* ReelAuthView.swift */; };
 		1D83FD4A2E6911C40040E67C /* 🛠️PreventAutomaticKeyboardOption.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D83FD492E6911C40040E67C /* 🛠️PreventAutomaticKeyboardOption.swift */; };
 		1D83FD4C2E6916730040E67C /* 🛠️PreventAutomaticKeyboardOption.swift in CopyFiles */ = {isa = PBXBuildFile; fileRef = 1D83FD492E6911C40040E67C /* 🛠️PreventAutomaticKeyboardOption.swift */; };
 		1D83FF1C2E6FC2660040E67C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 1D83FF1B2E6FC2660040E67C /* PrivacyInfo.xcprivacy */; };
@@ -678,6 +680,8 @@
 
 /* Begin PBXFileReference section */
 		09E5D56FD058A6900C5BFB15 /* ReelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelService.swift; sourceTree = "<group>"; };
+		18A7F40E2FAAA00100A7F410 /* ReelAuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelAuthService.swift; sourceTree = "<group>"; };
+		18A7F40F2FAAA00100A7F410 /* ReelAuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReelAuthView.swift; sourceTree = "<group>"; };
 		1D83FD492E6911C40040E67C /* 🛠️PreventAutomaticKeyboardOption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "🛠️PreventAutomaticKeyboardOption.swift"; sourceTree = "<group>"; };
 		1D83FF1A2E6F051D0040E67C /* widget1200w.jpeg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = widget1200w.jpeg; sourceTree = "<group>"; };
 		1D83FF1B2E6FC2660040E67C /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -961,10 +965,12 @@
 		};
 		CA0FA194F48CF9A88F5532BB /* 🎞️Reels */ = {
 			isa = PBXGroup;
-			children = (
-				FCF47B972FD7ABE700A650F8 /* ReelBackgroundSession.swift */,
-				821D14EAF2BB4A3A904838AE /* ReelBackendConfig.generated.swift */,
-				B1B96BC25927087FDE588DF6 /* ReelModels.swift */,
+				children = (
+					FCF47B972FD7ABE700A650F8 /* ReelBackgroundSession.swift */,
+					18A7F40E2FAAA00100A7F410 /* ReelAuthService.swift */,
+					18A7F40F2FAAA00100A7F410 /* ReelAuthView.swift */,
+					821D14EAF2BB4A3A904838AE /* ReelBackendConfig.generated.swift */,
+					B1B96BC25927087FDE588DF6 /* ReelModels.swift */,
 				09E5D56FD058A6900C5BFB15 /* ReelService.swift */,
 				AD55FD8BA7CC12FCB03A7238 /* ReelsListView.swift */,
 			);
@@ -1729,9 +1735,11 @@
 		F54BE1C228CB480900532025 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (
-				4C4F67F0E3E1877B4C16BDAE /* ReelsListView.swift in Sources */,
-				F5606E692A9D87800046EC5D /* 🪧Situation.swift in Sources */,
+				files = (
+					4C4F67F0E3E1877B4C16BDAE /* ReelsListView.swift in Sources */,
+					18A7F4102FAAA00100A7F410 /* ReelAuthService.swift in Sources */,
+					18A7F4112FAAA00100A7F410 /* ReelAuthView.swift in Sources */,
+					F5606E692A9D87800046EC5D /* 🪧Situation.swift in Sources */,
 				F53858282A9C783E00A0D72D /* 🪧EmptyIconView.swift in Sources */,
 				54FF365212880A892EE98E78 /* ReelBackendConfig.generated.swift in Sources */,
 				F51E39E52A8CAA9800F32F4F /* 👆Buttons.swift in Sources */,

@@ -15,7 +15,7 @@ struct ReelsListView: View {
 // MARK: - Import Queue
 
 enum ImportJobStatus: String, Codable {
-    case queued, processing, failed
+    case queued, processing, failed, completed
 }
 
 struct ImportQueueJob: Codable, Identifiable, Hashable {
@@ -84,12 +84,16 @@ enum RecentlyAddedItem: Identifiable {
 
 struct ReelplayRootView: View {
     @EnvironmentObject var app: 📱AppModel
-    @AppStorage("reelplay.socialProfileID") private var socialProfileID = ""
-    @AppStorage("reelplay.socialHandle") private var socialHandle = ""
+    @AppStorage("reelplay.authUserID")        private var authUserID        = ""
+    @AppStorage("reelplay.authAccessToken")   private var authAccessToken   = ""
+    @AppStorage("reelplay.authRefreshToken")  private var authRefreshToken  = ""
+    @AppStorage("reelplay.authEmail")         private var authEmail         = ""
+    @AppStorage("reelplay.socialProfileID")   private var socialProfileID   = ""
+    @AppStorage("reelplay.socialHandle")      private var socialHandle      = ""
     @AppStorage("reelplay.socialDisplayName") private var socialDisplayName = ""
-    @AppStorage("reelplay.profilePhotoData") private var profilePhotoData = Data()
-    @AppStorage("reelplay.lastOpenedReelID") private var lastOpenedReelID = ""
-    @AppStorage("reelplay.viewHistoryIDs") private var viewHistoryIDsString = ""
+    @AppStorage("reelplay.profilePhotoData")  private var profilePhotoData  = Data()
+    @AppStorage("reelplay.lastOpenedReelID")  private var lastOpenedReelID  = ""
+    @AppStorage("reelplay.viewHistoryIDs")    private var viewHistoryIDsString = ""
     @State private var reels: [ReelItem] = []
     @State private var isKeyboardVisible = false
     @State private var socialSummary: ReelSocialSummary = .empty
@@ -105,6 +109,7 @@ struct ReelplayRootView: View {
     @State private var importText = ""
     @State private var selectedHomeCollectionID: String?
     @State private var isLoading = false
+    @State private var hasStartedInitialLoad = false
     @State private var importQueue: [ImportQueueJob] = []
     @State private var isRunningQueue = false
     @State private var importQueueStageIndex = 0
@@ -117,6 +122,7 @@ struct ReelplayRootView: View {
     @State private var selectedReelElapsedSeconds = 0
     @State private var preparingReelTitle: String?
     @State private var errorMessage: String?
+    @State private var showingAllReels = false
 
     private let importStages = [
         "Reading reel",
@@ -203,12 +209,25 @@ struct ReelplayRootView: View {
                     onRetry: { self.retryReel(reel) }
                 )
             }
+            .navigationDestination(isPresented: self.$showingAllReels) {
+                RecentlyAddedAllScreen(
+                    reels: self.reels.sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") },
+                    onSelectReel: { self.prepareAndOpenReel($0) },
+                    onDelete: { await self.deleteReel($0) },
+                    onLoadMore: { await self.loadMoreReels() }
+                )
+            }
         }
         .task {
-            await self.bootstrapSocialProfileIfNeeded()
-            await self.loadReels()
-            self.loadQueue()
-            Task { await self.runQueue() }
+            await self.startInitialLoadIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reelplayDidReceivePushToken)) { note in
+            guard let token = note.object as? String else { return }
+            Task { await self.sendPushTokenToBackend(token) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .reelplayDidTapPushNotification)) { note in
+            guard let info = note.userInfo else { return }
+            self.handlePushTap(userInfo: info)
         }
         .onChange(of: self.app.sharedReelURL) { _, url in
             guard let url else { return }
@@ -241,6 +260,11 @@ struct ReelplayRootView: View {
                     continueReel: self.continuePlayingReel,
                     isLoading: self.isLoading,
                     errorMessage: self.errorMessage,
+                    processingJobProgress: self.progress(
+                        activeStageIndex: self.importQueueStageIndex,
+                        stageCount: self.importStages.count,
+                        elapsedSeconds: self.importQueueElapsed
+                    ),
                     selectedCollectionID: self.$selectedHomeCollectionID,
                     onSelectReel: { self.prepareAndOpenReel($0) },
                     onSelectCollection: { collection in
@@ -252,10 +276,16 @@ struct ReelplayRootView: View {
                     onImport: { self.selectedTab = .add },
                     onDelete: { await self.deleteReel($0) },
                     onRetryJob: { self.retryJob($0) },
+                    onRemoveJob: { job in
+                        self.importQueue.removeAll { $0.id == job.id }
+                        self.saveQueue()
+                    },
                     onTapProcessingJob: {
                         withAnimation(.easeInOut(duration: 0.2)) { self.showingQueueProgress = true }
                     },
-                    onSearchTap: { self.selectedTab = .search }
+                    onSearchTap: { self.selectedTab = .search },
+                    onProfileTap: { self.selectedTab = .profile },
+                    onSeeAllReels: { self.showingAllReels = true }
                 )
             case .search:
                 ReelplaySearchScreen(
@@ -308,8 +338,8 @@ struct ReelplayRootView: View {
                     onSaveProfile: { displayName, handle in await self.saveProfile(displayName: displayName, handle: handle) },
                     onAddFriend: { await self.addFriend(handle: $0) },
                     onRespondToFriendRequest: { friendship, accept in await self.respond(to: friendship, accept: accept) },
-                    onPublishSavedList: { await self.publishSavedList() },
-                    onSelectReel: { self.prepareAndOpenReel($0) }
+                    onSelectReel: { self.prepareAndOpenReel($0) },
+                    onSignOut: { await self.signOut() }
                 )
         }
     }
@@ -354,6 +384,27 @@ struct ReelplayRootView: View {
         self.isLoading = false
     }
 
+    private func startInitialLoadIfNeeded() async {
+        guard !self.hasStartedInitialLoad else { return }
+        self.hasStartedInitialLoad = true
+
+        self.loadQueue()
+        await self.bootstrapSocialProfileIfNeeded()
+        await self.loadReels()
+        await self.runQueue()
+        await self.requestPushPermissionAndRegister()
+    }
+
+    private func loadMoreReels() async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        do {
+            let more = try await ReelService().listProfileLibrary(profileID: profileID, limit: 100)
+            self.reels = more
+        } catch {
+            self.errorMessage = error.localizedDescription
+        }
+    }
+
     private func deleteReel(_ reel: ReelItem) async {
         guard let profileID = self.currentSocialProfileID else { return }
         do {
@@ -378,13 +429,16 @@ struct ReelplayRootView: View {
 
     private func bootstrapSocialProfileIfNeeded() async {
         do {
+            // Auth user ID takes priority; fall back to device ID for legacy installs
             let profileID: UUID
-            if let existingID = UUID(uuidString: self.socialProfileID) {
+            if let authID = UUID(uuidString: self.authUserID) {
+                profileID = authID
+            } else if let existingID = UUID(uuidString: self.socialProfileID) {
                 profileID = existingID
             } else {
                 profileID = self.defaultSocialProfileID
-                self.socialProfileID = profileID.uuidString
             }
+            self.socialProfileID = profileID.uuidString
 
             if self.socialHandle.isEmpty {
                 self.socialHandle = "user-\(profileID.uuidString.prefix(8).lowercased())"
@@ -398,6 +452,64 @@ struct ReelplayRootView: View {
         } catch {
             self.errorMessage = error.localizedDescription
         }
+    }
+
+    // MARK: – Push notifications
+
+    @MainActor
+    private func requestPushPermissionAndRegister() async {
+        do {
+            let granted = try await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound, .badge])
+            if granted {
+                await MainActor.run { UIApplication.shared.registerForRemoteNotifications() }
+            }
+        } catch {
+            print("Push permission error: \(error.localizedDescription)")
+        }
+    }
+
+    private func sendPushTokenToBackend(_ token: String) async {
+        guard let profileID = self.currentSocialProfileID else { return }
+        do {
+            var request = URLRequest(url: URL(string: ReelBackendConfig.supabaseURL + "/functions/v1/reels/social/push-token")!)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(ReelBackendConfig.supabaseAnonKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(ReelBackendConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "profile_id": profileID.uuidString,
+                "token": token,
+                "platform": "ios",
+            ])
+            _ = try await URLSession.shared.data(for: request)
+        } catch {
+            print("Push token registration failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func handlePushTap(userInfo: [AnyHashable: Any]) {
+        let type = userInfo["type"] as? String ?? ""
+        if type == "collection_share" || type == "reel_share" {
+            // Navigate to Collections > Shared tab so the user sees the shared item
+            self.selectedTab = .collections
+        }
+    }
+
+    // MARK: – Sign out
+
+    func signOut() async {
+        await ReelAuthService().signOut(accessToken: self.authAccessToken)
+        self.authUserID       = ""
+        self.authAccessToken  = ""
+        self.authRefreshToken = ""
+        self.authEmail        = ""
+        self.socialProfileID  = ""
+        self.socialHandle     = ""
+        self.socialDisplayName = ""
+        self.reels            = []
+        self.importQueue      = []
+        self.saveQueue()
     }
 
     private func loadDataIfNeeded(for tab: ReelplayTab) async {
@@ -635,23 +747,6 @@ struct ReelplayRootView: View {
         }
     }
 
-    private func publishSavedList() async {
-        guard let profileID = self.currentSocialProfileID else { return }
-        let reelIDs = self.socialSummary.bookmarkIDs.isEmpty ? self.reels.prefix(12).map(\.id) : self.socialSummary.bookmarkIDs
-        guard !reelIDs.isEmpty else { return }
-
-        do {
-            self.socialSummary = try await ReelService().createCollection(
-                profileID: profileID,
-                name: "Saved Reelplays",
-                reelIDs: Array(reelIDs),
-                isPublic: true
-            )
-        } catch {
-            self.errorMessage = error.localizedDescription
-        }
-    }
-
     private func importCurrentURL() {
         let text = self.importText.trimmingCharacters(in: .whitespacesAndNewlines)
         // Support multiple URLs — one per line or space-separated
@@ -685,12 +780,24 @@ struct ReelplayRootView: View {
     }
 
     private func loadQueue() {
+        guard !self.isRunningQueue else { return }
         guard let data = UserDefaults.standard.data(forKey: "reelplay.importQueue"),
               let jobs = try? JSONDecoder().decode([ImportQueueJob].self, from: data) else { return }
-        self.importQueue = jobs.map { job in
+        var didNormalizeJobs = false
+        self.importQueue = jobs.compactMap { job in
+            if job.status == .completed {
+                didNormalizeJobs = true
+                return nil
+            }
             var j = job
-            if j.status == .processing { j.status = .queued }
+            if j.status == .processing {
+                j.status = .queued
+                didNormalizeJobs = true
+            }
             return j
+        }
+        if didNormalizeJobs {
+            self.saveQueue()
         }
     }
 
@@ -701,6 +808,7 @@ struct ReelplayRootView: View {
 
     private func runQueue() async {
         guard !self.isRunningQueue else { return }
+        self.restoreAbandonedProcessingJobs()
         self.isRunningQueue = true
         defer {
             self.isRunningQueue = false
@@ -711,6 +819,7 @@ struct ReelplayRootView: View {
             self.importQueue[idx].status = .processing
             self.importQueueStageIndex = 0
             self.importQueueElapsed = 0
+            withAnimation(.easeInOut(duration: 0.2)) { self.showingQueueProgress = true }
             self.saveQueue()
 
             let job = self.importQueue[idx]
@@ -731,15 +840,24 @@ struct ReelplayRootView: View {
                 }
             }
 
-            guard let url = URL(string: job.url),
-                  let profileID = self.currentSocialProfileID else {
+            guard let url = URL(string: job.url) else {
                 animationTask.cancel()
                 if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
                     self.importQueue[i].status = .failed
-                    self.importQueue[i].errorMessage = "Invalid URL or missing profile."
+                    self.importQueue[i].errorMessage = "Invalid URL."
                     self.saveQueue()
                 }
                 continue
+            }
+
+            guard let profileID = self.currentSocialProfileID else {
+                animationTask.cancel()
+                if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
+                    self.importQueue[i].status = .queued
+                    self.importQueue[i].errorMessage = nil
+                    self.saveQueue()
+                }
+                break
             }
 
             do {
@@ -753,9 +871,17 @@ struct ReelplayRootView: View {
                 animationTask.cancel()
                 self.reels.removeAll { $0.id == reel.id }
                 self.reels.insert(reel, at: 0)
-                self.importQueue.removeAll { $0.id == job.id }
-                self.saveQueue()
+                if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
+                    self.importQueue[i].status = .completed
+                    self.importQueue[i].displayTitle = reel.title ?? job.displayTitle
+                    self.saveQueue()
+                }
                 withAnimation(.easeInOut(duration: 0.2)) { self.showingQueueProgress = false }
+                try? await Task.sleep(for: .milliseconds(1500))
+                withAnimation(.easeOut(duration: 0.25)) {
+                    self.importQueue.removeAll { $0.id == job.id }
+                }
+                self.saveQueue()
             } catch {
                 animationTask.cancel()
                 if let i = self.importQueue.firstIndex(where: { $0.id == job.id }) {
@@ -768,12 +894,27 @@ struct ReelplayRootView: View {
         }
     }
 
+    private func restoreAbandonedProcessingJobs() {
+        var didRestore = false
+        for index in self.importQueue.indices where self.importQueue[index].status == .processing {
+            self.importQueue[index].status = .queued
+            didRestore = true
+        }
+        if didRestore {
+            self.saveQueue()
+        }
+    }
+
     private func retryJob(_ job: ImportQueueJob) {
         if let idx = self.importQueue.firstIndex(where: { $0.id == job.id }) {
             self.importQueue[idx].status = .queued
             self.importQueue[idx].errorMessage = nil
             self.saveQueue()
-            Task { await self.runQueue() }
+            // If runQueue is already running its while-loop will pick up this newly-queued
+            // job automatically. Only spawn a new task when nothing is running.
+            if !self.isRunningQueue {
+                Task { await self.runQueue() }
+            }
         }
     }
 
@@ -956,7 +1097,7 @@ struct ReelplayRootView: View {
 
     private func processOCR(for reel: ReelItem) async -> ReelItem {
         guard !self.activeOCRReelIDs.contains(reel.id) else { return reel }
-        await MainActor.run { self.activeOCRReelIDs.insert(reel.id) }
+        await MainActor.run { _ = self.activeOCRReelIDs.insert(reel.id) }
         defer { Task { @MainActor in self.activeOCRReelIDs.remove(reel.id) } }
 
         let mediaItems = reel.mediaItems ?? []
@@ -1058,6 +1199,7 @@ private enum ReelplayTheme {
     static let surface = Color(hex: 0xFFFFFF)
     static let softSurface = Color(hex: 0xE8E5DF)
     static let accent = Color(hex: 0xD4C7A7)
+    static let accentGold = Color(hex: 0x9B7A45)
     static let mutedText = Color.black.opacity(0.54)
     static let divider = Color.black.opacity(0.08)
 }
@@ -1083,6 +1225,7 @@ private struct ReelplayHomeScreen: View {
     let continueReel: ReelItem?
     let isLoading: Bool
     let errorMessage: String?
+    let processingJobProgress: Double
     @Binding var selectedCollectionID: String?
     let onSelectReel: (ReelItem) -> Void
     let onSelectCollection: (ReelCollection) -> Void
@@ -1090,8 +1233,11 @@ private struct ReelplayHomeScreen: View {
     let onImport: () -> Void
     let onDelete: (ReelItem) async -> Void
     let onRetryJob: (ImportQueueJob) -> Void
+    let onRemoveJob: (ImportQueueJob) -> Void
     let onTapProcessingJob: () -> Void
     let onSearchTap: () -> Void
+    let onProfileTap: () -> Void
+    let onSeeAllReels: () -> Void
     @State private var menuReel: ReelItem?
 
     private var selectedCollection: ReelCollection? {
@@ -1104,15 +1250,11 @@ private struct ReelplayHomeScreen: View {
     }
 
     private var isInitialLibraryEmpty: Bool {
-        self.reels.isEmpty && self.collections.isEmpty
+        self.reels.isEmpty && self.collections.isEmpty && self.importQueue.isEmpty
     }
 
-    private var recentlyAddedItems: [RecentlyAddedItem] {
-        let pending = self.importQueue.map(RecentlyAddedItem.pending)
-        let completed = self.reels
-            .sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }
-            .map(RecentlyAddedItem.reel)
-        return (pending + completed).sorted { $0.sortKey > $1.sortKey }
+    private var completedReels: [ReelItem] {
+        self.reels.sorted { ($0.createdAt ?? "") > ($1.createdAt ?? "") }
     }
 
     var body: some View {
@@ -1121,31 +1263,32 @@ private struct ReelplayHomeScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     HStack(alignment: .center) {
-                        Text("Reelplay")
-                            .font(.system(size: 36, weight: .bold))
-                            .foregroundStyle(ReelplayTheme.black)
+                        HStack(spacing: 10) {
+                            Image("AboutAppIcon")
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 32, height: 32)
+                                .clipShape(RoundedRectangle(cornerRadius: 7))
+
+                            Text("Reelplay")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(ReelplayTheme.black)
+                        }
 
                         Spacer()
 
                         Button {
-                            Task { await self.onRefresh() }
+                            self.onProfileTap()
                         } label: {
-                            ZStack(alignment: .topTrailing) {
-                                Image(systemName: "bell")
-                                    .font(.system(size: 21, weight: .semibold))
-                                    .foregroundStyle(ReelplayTheme.black)
-                                    .frame(width: 58, height: 58)
-                                    .background(ReelplayTheme.surface)
-                                    .clipShape(Circle())
-                                    .shadow(color: .black.opacity(0.08), radius: 12, y: 6)
-
-                                Circle()
-                                    .fill(ReelplayTheme.accent)
-                                    .frame(width: 10, height: 10)
-                                    .offset(x: -8, y: 10)
-                            }
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(ReelplayTheme.black.opacity(0.65))
+                                .frame(width: 40, height: 40)
+                                .background(ReelplayTheme.surface)
+                                .clipShape(Circle())
+                                .shadow(color: .black.opacity(0.07), radius: 10, y: 4)
                         }
-                        .disabled(self.isLoading)
+                        .buttonStyle(.plain)
                     }
                     .padding(.top, 8)
 
@@ -1225,32 +1368,40 @@ private struct ReelplayHomeScreen: View {
                             }
                         }
 
-                        if !self.reels.isEmpty || !self.importQueue.isEmpty {
+                        if !self.importQueue.isEmpty {
                             VStack(alignment: .leading, spacing: 12) {
-                                HomeSectionHeader(title: "Recently Added", actionTitle: "See all")
+                                HomeSectionHeader(title: "Import Queue")
 
                                 VStack(spacing: 10) {
-                                    ForEach(self.recentlyAddedItems.prefix(10)) { item in
-                                        switch item {
-                                        case .reel(let reel):
-                                            Button {
-                                                self.onSelectReel(reel)
-                                            } label: {
-                                                HomeRecentReelRow(reel: reel, onMenuTap: {
-                                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                                        self.menuReel = reel
-                                                    }
-                                                })
-                                            }
-                                            .buttonStyle(.plain)
+                                    ForEach(self.importQueue.prefix(3)) { job in
+                                        ImportQueueCard(
+                                            job: job,
+                                            processingJobProgress: self.processingJobProgress,
+                                            onRetry: { self.onRetryJob(job) },
+                                            onTapProcessing: self.onTapProcessingJob,
+                                            onRemove: { self.onRemoveJob(job) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
-                                        case .pending(let job):
-                                            ImportQueueCard(
-                                                job: job,
-                                                onRetry: { self.onRetryJob(job) },
-                                                onTapProcessing: self.onTapProcessingJob
-                                            )
+                        if !self.completedReels.isEmpty {
+                            VStack(alignment: .leading, spacing: 12) {
+                                HomeSectionHeader(title: "Recently Added", actionTitle: "See all", action: self.onSeeAllReels)
+
+                                VStack(spacing: 10) {
+                                    ForEach(self.completedReels.prefix(10)) { reel in
+                                        Button {
+                                            self.onSelectReel(reel)
+                                        } label: {
+                                            HomeRecentReelRow(reel: reel, onMenuTap: {
+                                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                                    self.menuReel = reel
+                                                }
+                                            })
                                         }
+                                        .buttonStyle(.plain)
                                     }
                                 }
                             }
@@ -1327,7 +1478,7 @@ private struct ReelplayImportScreen: View {
     @State private var isPickingGallery = false
 
     private var pendingJobs: [ImportQueueJob] {
-        importQueue.filter { $0.status == .queued || $0.status == .processing || $0.status == .failed }
+        importQueue.filter { $0.status != .completed }
     }
 
     var body: some View {
@@ -1594,6 +1745,10 @@ private struct ImportQueueRow: View {
             Image(systemName: "exclamationmark.circle")
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.red)
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color(hex: 0x3A7D44))
         }
     }
 
@@ -1602,6 +1757,7 @@ private struct ImportQueueRow: View {
         case .processing: return "Processing…"
         case .queued: return "In queue"
         case .failed: return job.errorMessage ?? "Failed"
+        case .completed: return "Imported"
         }
     }
 
@@ -1610,6 +1766,7 @@ private struct ImportQueueRow: View {
         case .processing: return ReelplayTheme.black.opacity(0.54)
         case .queued: return ReelplayTheme.mutedText
         case .failed: return .red
+        case .completed: return Color(hex: 0x3A7D44)
         }
     }
 }
@@ -1895,34 +2052,32 @@ private struct CollectionsMyTab: View {
             .padding(.bottom, 32)
         }
         .scrollIndicators(.hidden)
-        .confirmationDialog(
-            self.menuCollection?.name ?? "",
-            isPresented: Binding(get: { self.menuCollection != nil }, set: { if !$0 { self.menuCollection = nil } }),
-            titleVisibility: .visible
-        ) {
+        .overlay {
             if let collection = self.menuCollection {
-                Button("View reels") {
-                    withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) { self.expandedSocialID = collection.id }
-                    self.menuCollection = nil
-                }
-                Button("Share with friend") {
-                    self.shareHandleFor = collection
-                    self.shareHandleDraft = ""
-                    self.menuCollection = nil
-                }
-                Button("Rename") {
-                    self.renameDraft = collection.name
-                    self.showingRenameFor = collection
-                    self.menuCollection = nil
-                }
-                Button("Delete", role: .destructive) {
-                    let c = collection
-                    self.menuCollection = nil
-                    Task { await self.onDeleteCollection(c) }
-                }
-                Button("Cancel", role: .cancel) { self.menuCollection = nil }
+                CollectionActionMenu(
+                    collection: collection,
+                    reelCount: self.reelsFor(collection).count,
+                    onShareWithFriend: {
+                        self.shareHandleFor = collection
+                        self.shareHandleDraft = ""
+                        self.menuCollection = nil
+                    },
+                    onRename: {
+                        self.renameDraft = collection.name
+                        self.showingRenameFor = collection
+                        self.menuCollection = nil
+                    },
+                    onDelete: {
+                        let c = collection
+                        self.menuCollection = nil
+                        Task { await self.onDeleteCollection(c) }
+                    },
+                    onDismiss: { self.menuCollection = nil }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: self.menuCollection?.id)
         .alert("Rename Collection", isPresented: Binding(get: { self.showingRenameFor != nil }, set: { if !$0 { self.showingRenameFor = nil } })) {
             TextField("Collection name", text: self.$renameDraft)
             Button("Save") {
@@ -1930,7 +2085,7 @@ private struct CollectionsMyTab: View {
             }
             Button("Cancel", role: .cancel) { self.showingRenameFor = nil }
         }
-        .alert("Share with Friend", isPresented: Binding(get: { self.shareHandleFor != nil }, set: { if !$0 { self.shareHandleFor = nil } })) {
+        .alert("Share with friend", isPresented: Binding(get: { self.shareHandleFor != nil }, set: { if !$0 { self.shareHandleFor = nil } })) {
             TextField("@handle", text: self.$shareHandleDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -2349,15 +2504,20 @@ private struct ReelplaySearchScreen: View {
         guard !query.isEmpty else { return self.allSearchableReels }
 
         return self.allSearchableReels.filter { reel in
-            [
+            let fields: [String?] = [
                 reel.title,
                 reel.caption,
                 reel.summary,
                 reel.creatorUsername,
                 reel.category,
             ]
-            .compactMap { $0?.lowercased() }
-            .contains { $0.contains(query) }
+            if fields.compactMap({ $0?.lowercased() }).contains(where: { $0.contains(query) }) {
+                return true
+            }
+            if let ocr = reel.ocrEntries, ocr.contains(where: { $0.text.lowercased().contains(query) }) {
+                return true
+            }
+            return false
         }
     }
 
@@ -2492,8 +2652,8 @@ private struct ReelplayProfileScreen: View {
     let onSaveProfile: (String, String) async -> Void
     let onAddFriend: (String) async -> Void
     let onRespondToFriendRequest: (ReelFriendship, Bool) async -> Void
-    let onPublishSavedList: () async -> Void
     let onSelectReel: (ReelItem) -> Void
+    var onSignOut: (() async -> Void)? = nil
     @State private var draftHandle = ""
     @State private var draftName = ""
     @State private var friendHandle = ""
@@ -2667,19 +2827,6 @@ private struct ReelplayProfileScreen: View {
                     }
                 }
 
-                Button {
-                    Task { await self.onPublishSavedList() }
-                } label: {
-                    Label("Share saved list", systemImage: "square.and.arrow.up")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(ReelplayTheme.black)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                        .background(ReelplayTheme.softSurface.opacity(0.72))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-
                 HStack(spacing: 0) {
                     ForEach(["Saved", "History"], id: \.self) { tab in
                         Button {
@@ -2769,7 +2916,8 @@ private struct ReelplayProfileScreen: View {
             ReelplaySettingsSheet(
                 draftName: self.$draftName,
                 draftHandle: self.$draftHandle,
-                onSave: { Task { await self.onSaveProfile(self.draftName, self.draftHandle) } }
+                onSave: { Task { await self.onSaveProfile(self.draftName, self.draftHandle) } },
+                onSignOut: self.onSignOut
             )
         }
     }
@@ -2914,8 +3062,10 @@ private struct ReelplaySettingsSheet: View {
     @Binding var draftName: String
     @Binding var draftHandle: String
     let onSave: () -> Void
+    var onSignOut: (() async -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var showingEditProfile = false
+    @State private var showingSignOutConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -2950,6 +3100,29 @@ private struct ReelplaySettingsSheet: View {
                     Divider().padding(.horizontal, 20).padding(.vertical, 8)
 
                     ProfileMenuRow(symbol: "info.circle", title: "App version", trailing: "1.0")
+
+                    if self.onSignOut != nil {
+                        Divider().padding(.horizontal, 20).padding(.vertical, 8)
+
+                        Button {
+                            self.showingSignOutConfirm = true
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    .font(.system(size: 17, weight: .medium))
+                                    .foregroundStyle(.red)
+                                    .frame(width: 28)
+                                Text("Sign out")
+                                    .font(.body.weight(.medium))
+                                    .foregroundStyle(.red)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 20)
+                            .frame(height: 52)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
                 .padding(.bottom, 28)
             }
@@ -2969,6 +3142,13 @@ private struct ReelplaySettingsSheet: View {
                     self.onSave()
                     self.showingEditProfile = false
                 })
+            }
+            .confirmationDialog("Sign out of Reelplay?", isPresented: self.$showingSignOutConfirm, titleVisibility: .visible) {
+                Button("Sign out", role: .destructive) {
+                    self.dismiss()
+                    Task { await self.onSignOut?() }
+                }
+                Button("Cancel", role: .cancel) {}
             }
         }
     }
@@ -3196,12 +3376,12 @@ private struct ReelplayTabItem: View {
             } else {
                 Image(systemName: self.tab.symbol)
                     .font(.system(size: 22, weight: self.isSelected ? .bold : .regular))
-                    .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
+                    .foregroundStyle(self.isSelected ? ReelplayTheme.accentGold : ReelplayTheme.black.opacity(0.48))
                     .frame(height: 26)
 
                 Text(self.tab.title)
                     .font(.caption2.weight(self.isSelected ? .bold : .regular))
-                    .foregroundStyle(self.isSelected ? ReelplayTheme.black : ReelplayTheme.black.opacity(0.58))
+                    .foregroundStyle(self.isSelected ? ReelplayTheme.accentGold : ReelplayTheme.black.opacity(0.48))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
             }
@@ -3324,12 +3504,14 @@ private struct ReelCollection: Identifiable {
     }
 
     static func displayName(_ value: String) -> String {
-        value
+        let acronyms: Set<String> = ["ai", "diy"]
+        return value
             .replacingOccurrences(of: "_", with: " ")
             .replacingOccurrences(of: "-", with: " ")
             .split(separator: " ")
             .map { word in
                 let lower = word.lowercased()
+                if acronyms.contains(lower) { return lower.uppercased() }
                 return lower.prefix(1).uppercased() + lower.dropFirst()
             }
             .joined(separator: " ")
@@ -3427,6 +3609,7 @@ private struct ReelplaySearchField: View {
 private struct HomeSectionHeader: View {
     let title: String
     var actionTitle: String?
+    var action: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -3446,6 +3629,8 @@ private struct HomeSectionHeader: View {
                 }
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(ReelplayTheme.black.opacity(0.62))
+                .contentShape(Rectangle())
+                .onTapGesture { self.action?() }
             }
         }
     }
@@ -3811,8 +3996,8 @@ private struct HomeCollectionCard: View {
                 endPoint: .bottomTrailing
             )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(self.isSelected ? ReelplayTheme.black.opacity(0.34) : ReelplayTheme.divider, lineWidth: self.isSelected ? 1.5 : 1))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(self.isSelected ? ReelplayTheme.black.opacity(0.34) : ReelplayTheme.divider, lineWidth: self.isSelected ? 1.5 : 1))
     }
 }
 
@@ -3917,84 +4102,326 @@ private struct ReelActionMenu: View {
     }
 }
 
+private struct CollectionActionMenu: View {
+    let collection: ReelSocialCollection
+    let reelCount: Int
+    let onShareWithFriend: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+    let onDismiss: () -> Void
+
+    private var shareText: String {
+        "Check out my \"\(self.collection.name)\" collection on Reelplay — \(self.reelCount) reels saved."
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.36)
+                .ignoresSafeArea()
+                .onTapGesture { self.onDismiss() }
+
+            VStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 2.5)
+                    .fill(Color.primary.opacity(0.18))
+                    .frame(width: 36, height: 4)
+                    .padding(.top, 12)
+
+                HStack(spacing: 12) {
+                    Image(systemName: self.collection.isPublic ? "globe" : "folder.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(self.collection.isPublic ? ReelplayTheme.accent : ReelplayTheme.black.opacity(0.72))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(self.collection.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        Text("\(self.reelCount) reel\(self.reelCount == 1 ? "" : "s") • \(self.collection.isPublic ? "public" : "private")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+
+                Divider().padding(.horizontal, 20)
+
+                Button {
+                    self.onShareWithFriend()
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "person.badge.plus")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 24)
+                        Text("Share with a friend")
+                            .font(.body.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(height: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Divider().padding(.horizontal, 20)
+
+                ShareLink(item: self.shareText) {
+                    HStack(spacing: 14) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 24)
+                        Text("Share with anyone")
+                            .font(.body.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(height: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded { self.onDismiss() })
+
+                Divider().padding(.horizontal, 20)
+
+                Button {
+                    self.onRename()
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 24)
+                        Text("Rename")
+                            .font(.body.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(height: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Divider().padding(.horizontal, 20)
+
+                Button(role: .destructive) {
+                    self.onDelete()
+                } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 17, weight: .medium))
+                            .frame(width: 24)
+                        Text("Delete")
+                            .font(.body.weight(.medium))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(height: 54)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.red)
+            }
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+            .padding(.horizontal, 12)
+            .padding(.bottom, 32)
+        }
+        .ignoresSafeArea()
+    }
+}
+
 private struct ImportQueueCard: View {
     let job: ImportQueueJob
+    let processingJobProgress: Double
     let onRetry: () -> Void
     let onTapProcessing: () -> Void
+    var onRemove: (() -> Void)? = nil
 
     var body: some View {
         Button {
             if self.job.status == .processing { self.onTapProcessing() }
-            else if self.job.status == .failed { self.onRetry() }
         } label: {
             HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(self.thumbnailBackground)
-                        .frame(width: 96, height: 72)
+                self.thumbnail
 
-                    Image(systemName: self.sourceIcon)
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundStyle(self.thumbnailForeground)
-
-                    if self.job.status == .processing {
-                        ProgressView()
-                            .tint(.white)
-                            .scaleEffect(1.1)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(self.job.displayTitle)
-                        .font(.headline.weight(.bold))
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(ReelplayTheme.black)
                         .lineLimit(1)
 
-                    HStack(spacing: 6) {
-                        switch self.job.status {
-                        case .queued:
-                            Image(systemName: "clock")
-                                .font(.caption.weight(.semibold))
-                            Text("Queued")
-                                .font(.caption.weight(.semibold))
-                        case .processing:
-                            Image(systemName: "arrow.2.circlepath")
-                                .font(.caption.weight(.semibold))
-                            Text("Processing… tap for details")
-                                .font(.caption.weight(.semibold))
-                        case .failed:
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .font(.caption.weight(.semibold))
-                            Text(self.job.errorMessage ?? "Failed — tap to retry")
-                                .font(.caption.weight(.semibold))
-                                .lineLimit(1)
-                        }
-                    }
-                    .foregroundStyle(self.statusColor)
+                    self.statusArea
 
                     Text(self.job.source.capitalized)
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(ReelplayTheme.black.opacity(0.4))
+                        .foregroundStyle(ReelplayTheme.black.opacity(0.36))
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: 0)
 
-                if self.job.status == .processing {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(ReelplayTheme.mutedText)
-                }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(ReelplayTheme.mutedText)
+                    .opacity(self.job.status == .processing ? 1 : 0)
             }
             .padding(12)
             .background(ReelplayTheme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(
-                self.job.status == .processing ? Color.blue.opacity(0.28) : ReelplayTheme.divider
-            ))
-            .opacity(self.job.status == .queued ? 0.66 : 1)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(self.borderColor, lineWidth: 1)
+            )
         }
         .buttonStyle(.plain)
-        .disabled(self.job.status == .queued)
+        .disabled(self.job.status == .queued || self.job.status == .completed)
+    }
+
+    @ViewBuilder
+    private var thumbnail: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(self.thumbnailBackground)
+            Image(systemName: self.sourceIcon)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(self.thumbnailForeground)
+        }
+        .frame(width: 76, height: 60)
+    }
+
+    @ViewBuilder
+    private var statusArea: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 4) {
+                Text(self.statusLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(self.labelColor)
+                Spacer()
+                if self.job.status != .failed {
+                    Text("\(Int(self.progressValue * 100))%")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(self.labelColor.opacity(0.8))
+                }
+            }
+
+            if self.job.status == .completed {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                    Text("Imported")
+                        .font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(Color(hex: 0x3A7D44))
+            } else if self.job.status == .failed {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.caption)
+                            .padding(.top, 1)
+                        Text(self.job.errorMessage ?? "Failed to import")
+                            .font(.caption.weight(.medium))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(Color.red.opacity(0.72))
+
+                    HStack(spacing: 8) {
+                        if let url = URL(string: self.job.url) {
+                            Link(destination: url) {
+                                Label("Open Link", systemImage: "arrow.up.right.square")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(ReelplayTheme.accentGold)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(ReelplayTheme.accentGold.opacity(0.10))
+                                    .clipShape(Capsule())
+                            }
+                        }
+
+                        Button {
+                            self.onRetry()
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(ReelplayTheme.black.opacity(0.55))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(ReelplayTheme.softSurface)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+
+                        if let onRemove {
+                            Button(action: onRemove) {
+                                Image(systemName: "trash")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color.red.opacity(0.65))
+                                    .padding(5)
+                                    .background(Color.red.opacity(0.08))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            } else {
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(ReelplayTheme.softSurface)
+                            .frame(height: 4)
+                        Capsule()
+                            .fill(self.progressBarColor)
+                            .frame(width: max(8, geo.size.width * self.progressValue), height: 4)
+                            .animation(.easeInOut(duration: 0.5), value: self.progressValue)
+                    }
+                }
+                .frame(height: 4)
+            }
+        }
+    }
+
+    private var progressValue: Double {
+        switch self.job.status {
+        case .queued: return 0.0
+        case .processing: return max(0.05, self.processingJobProgress)
+        case .failed, .completed: return 0.0
+        }
+    }
+
+    private var statusLabel: String {
+        switch self.job.status {
+        case .queued: return "Queued"
+        case .processing: return "Analyzing reel"
+        case .failed: return "Failed"
+        case .completed: return "Imported"
+        }
+    }
+
+    private var labelColor: Color {
+        switch self.job.status {
+        case .queued: return ReelplayTheme.mutedText
+        case .processing: return ReelplayTheme.accentGold
+        case .failed: return Color.red.opacity(0.68)
+        case .completed: return Color(hex: 0x3A7D44)
+        }
+    }
+
+    private var progressBarColor: Color {
+        switch self.job.status {
+        case .queued: return ReelplayTheme.accent.opacity(0.5)
+        case .processing: return ReelplayTheme.accentGold
+        case .failed, .completed: return Color.clear
+        }
+    }
+
+    private var borderColor: Color {
+        switch self.job.status {
+        case .failed: return Color.red.opacity(0.16)
+        case .processing: return ReelplayTheme.accentGold.opacity(0.24)
+        case .queued: return ReelplayTheme.divider
+        case .completed: return Color(hex: 0x3A7D44).opacity(0.20)
+        }
     }
 
     private var sourceIcon: String {
@@ -4008,9 +4435,9 @@ private struct ImportQueueCard: View {
 
     private var thumbnailBackground: Color {
         switch self.job.source {
-        case "tiktok": return Color(hex: 0x010101)
+        case "tiktok": return Color(hex: 0x0A0A0A)
         case "instagram": return Color(hex: 0xC13584)
-        case "youtube": return Color(hex: 0xFF0000)
+        case "youtube": return Color(hex: 0xCC0000)
         default: return ReelplayTheme.softSurface
         }
     }
@@ -4019,14 +4446,6 @@ private struct ImportQueueCard: View {
         switch self.job.source {
         case "tiktok", "instagram", "youtube": return .white
         default: return ReelplayTheme.mutedText
-        }
-    }
-
-    private var statusColor: Color {
-        switch self.job.status {
-        case .queued: return ReelplayTheme.mutedText
-        case .processing: return Color.blue.opacity(0.75)
-        case .failed: return .red
         }
     }
 }
@@ -4109,6 +4528,136 @@ private struct HomeRecentReelRow: View {
                 .fill(ReelplayTheme.divider)
                 .frame(height: 1)
                 .padding(.leading, 124)
+        }
+    }
+}
+
+// MARK: - Recently Added: See All
+
+private struct RecentlyAddedAllScreen: View {
+    let reels: [ReelItem]
+    let onSelectReel: (ReelItem) -> Void
+    let onDelete: (ReelItem) async -> Void
+    let onLoadMore: () async -> Void
+
+    @State private var menuReel: ReelItem?
+    @State private var isLoadingMore = false
+    @State private var reachedEnd = false
+
+    private var showLoadMore: Bool { !self.reachedEnd && self.reels.count >= 30 }
+
+    var body: some View {
+        ZStack {
+            ReelplayTheme.background.ignoresSafeArea()
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    // Subtle count chip
+                    Text("\(self.reels.count) reels")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.mutedText)
+                        .padding(.vertical, 14)
+                        .frame(maxWidth: .infinity)
+
+                    ForEach(Array(self.reels.enumerated()), id: \.element.id) { index, reel in
+                        RecentlyAddedRow(
+                            reel: reel,
+                            rowIndex: index,
+                            onTap: { self.onSelectReel(reel) },
+                            onMenuTap: {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    self.menuReel = reel
+                                }
+                            }
+                        )
+                    }
+
+                    // Load-more sentinel — auto-fires when it scrolls into view
+                    if self.showLoadMore {
+                        ZStack {
+                            if self.isLoadingMore {
+                                ProgressView()
+                                    .tint(ReelplayTheme.mutedText)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 64)
+                        .onAppear { self.triggerLoadMore() }
+                    }
+                }
+                .padding(.bottom, 32)
+            }
+            .scrollIndicators(.hidden)
+            .blur(radius: self.menuReel != nil ? 3 : 0)
+            .animation(.easeInOut(duration: 0.18), value: self.menuReel != nil)
+
+            if self.menuReel != nil {
+                Color.black.opacity(0.38)
+                    .ignoresSafeArea()
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { self.menuReel = nil }
+                    }
+                    .transition(.opacity)
+            }
+
+            if let reel = self.menuReel {
+                ReelActionMenu(
+                    reel: reel,
+                    onShare: { self.menuReel = nil },
+                    onDelete: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { self.menuReel = nil }
+                        Task { await self.onDelete(reel) }
+                    },
+                    onDismiss: {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) { self.menuReel = nil }
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(1)
+            }
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: self.menuReel?.id)
+        .navigationTitle("Recently Added")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar(.hidden, for: .tabBar)
+        .onChange(of: self.reels.count) { oldCount, newCount in
+            if self.isLoadingMore {
+                self.reachedEnd = newCount == oldCount
+                self.isLoadingMore = false
+            }
+        }
+    }
+
+    private func triggerLoadMore() {
+        guard !self.isLoadingMore && !self.reachedEnd else { return }
+        self.isLoadingMore = true
+        Task { await self.onLoadMore() }
+    }
+}
+
+private struct RecentlyAddedRow: View {
+    let reel: ReelItem
+    let rowIndex: Int
+    let onTap: () -> Void
+    let onMenuTap: () -> Void
+
+    @State private var isVisible = false
+
+    var body: some View {
+        Button(action: self.onTap) {
+            HomeRecentReelRow(reel: self.reel, onMenuTap: self.onMenuTap)
+        }
+        .buttonStyle(.plain)
+        .opacity(self.isVisible ? 1 : 0)
+        .offset(y: self.isVisible ? 0 : 8)
+        .onAppear {
+            // First 15 rows stagger in; the rest appear instantly
+            let delay = self.rowIndex < 15 ? Double(self.rowIndex) * 0.038 : 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
+                    self.isVisible = true
+                }
+            }
         }
     }
 }
@@ -7004,14 +7553,53 @@ private struct ReelScreenTab: View {
     let canLoadThumbnail: Bool
     let onSelect: (ReelOCREntry) -> Void
 
+    private var sortedSegments: [ReelSegment] {
+        reel.segments.sorted { $0.startSeconds < $1.startSeconds }
+    }
+
+    private func entries(for segment: ReelSegment) -> [ReelOCREntry] {
+        (ocrEntries ?? []).filter {
+            $0.timestampSeconds >= segment.startSeconds && $0.timestampSeconds < segment.endSeconds
+        }
+    }
+
+    private var ungroupedEntries: [ReelOCREntry] {
+        guard !sortedSegments.isEmpty else { return ocrEntries ?? [] }
+        return (ocrEntries ?? []).filter { entry in
+            !sortedSegments.contains { seg in
+                entry.timestampSeconds >= seg.startSeconds && entry.timestampSeconds < seg.endSeconds
+            }
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            if ocrEntries == nil || ocrEntries!.isEmpty {
+            if (ocrEntries ?? []).isEmpty {
                 Text("No on-screen text detected in this reel.")
                     .font(.subheadline)
                     .foregroundStyle(ReelplayTheme.mutedText)
                     .padding(.vertical, 20)
                     .padding(.horizontal, 20)
+            } else if !sortedSegments.isEmpty {
+                ForEach(sortedSegments) { segment in
+                    let segEntries = entries(for: segment)
+                    if !segEntries.isEmpty {
+                        SegmentScreenTextBlock(
+                            segment: segment,
+                            entries: segEntries,
+                            focusedID: focusedID,
+                            onSelect: onSelect
+                        )
+                    }
+                }
+                if !ungroupedEntries.isEmpty {
+                    SegmentScreenTextBlock(
+                        segment: nil,
+                        entries: ungroupedEntries,
+                        focusedID: focusedID,
+                        onSelect: onSelect
+                    )
+                }
             } else {
                 ForEach(ocrEntries!) { entry in
                     OCREntryRow(
@@ -7022,6 +7610,76 @@ private struct ReelScreenTab: View {
                         onSelect: { self.onSelect(entry) }
                     )
                 }
+            }
+        }
+    }
+}
+
+private struct SegmentScreenTextBlock: View {
+    let segment: ReelSegment?
+    let entries: [ReelOCREntry]
+    let focusedID: UUID?
+    let onSelect: (ReelOCREntry) -> Void
+
+    private func timestamp(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let segment {
+                HStack(spacing: 6) {
+                    Text(segment.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ReelplayTheme.black)
+                    Spacer()
+                    Text("\(timestamp(segment.startSeconds))–\(timestamp(segment.endSeconds))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(ReelplayTheme.mutedText)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+                .padding(.bottom, 6)
+
+                Rectangle()
+                    .fill(ReelplayTheme.divider)
+                    .frame(height: 1)
+                    .padding(.horizontal, 20)
+            }
+
+            ForEach(entries) { entry in
+                Button(action: { onSelect(entry) }) {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(timestamp(entry.timestampSeconds))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(ReelplayTheme.mutedText)
+                            .padding(.top, 2)
+                            .frame(width: 34, alignment: .leading)
+
+                        Text(entry.text)
+                            .font(.subheadline)
+                            .foregroundStyle(
+                                focusedID == entry.id
+                                    ? ReelplayTheme.black
+                                    : ReelplayTheme.black.opacity(0.72)
+                            )
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                    .background {
+                        if focusedID == entry.id {
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(ReelplayTheme.accent.opacity(0.10))
+                                .padding(.horizontal, 12)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
     }
